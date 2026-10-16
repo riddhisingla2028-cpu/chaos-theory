@@ -117,7 +117,8 @@ describe('match history and cosmetics', () => {
       expect(list[0].level).toBe(1);
       for (const c of list) expect(c.level).toBeLessThanOrEqual(MAX_ACCOUNT_LEVEL);
     }
-    expect(unlockedBetween(0, 1e9).length).toBe(TRAILS.length + VICTORIES.length - 2);
+    const premium = [...TRAILS, ...VICTORIES].filter((c) => c.premium).length;
+    expect(unlockedBetween(0, 1e9).length).toBe(TRAILS.length + VICTORIES.length - 2 - premium);
   });
 });
 

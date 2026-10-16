@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 
 import type { Look } from '../game/render';
 import { ENDLESS_MODES, STAGES, TRIALS, objectiveText, stageConfig, starThresholds, type EndlessId, type Mutator } from '../game/stages';
@@ -14,13 +14,16 @@ import {
   nextStage,
   totalStars,
   accountLevel,
+  chaosPlusUnlocked,
+  hasVerifiedChaosPlus,
+  PREVIEW_AVAILABLE,
   type Progress,
   type RecordEntry,
 } from '../progress';
 import { challengeById, currentChallenges, weekKeyOf } from '../progression';
 import { LevelPreview } from './LevelPreview';
 import { AdSlot } from './AdSlot';
-import { PURCHASES_AVAILABLE, type PremiumStatus } from '../monetization/entitlements';
+import { LICENSE_MESSAGES, STORE, activateLicense, forgetLicense, type PremiumStatus } from '../monetization/entitlements';
 import type { AudioState } from '../game/audio';
 import { BackButton, LockIcon, ShapePreview, SoundToggle, Stars } from './common';
 
@@ -47,17 +50,33 @@ export function Pips({ value, max = 5 }: { value: number; max?: number }) {
 
 // ---------- Splash ----------
 
-export function SplashScreen({ isTouch, onEnter }: { isTouch: boolean; onEnter: () => void }) {
+export function SplashScreen({ isTouch, onEnter, onFriends }: { isTouch: boolean; onEnter: () => void; onFriends: () => void }) {
   return (
     // click (not pointerdown): iOS only lets audio start on touchend/click, so this tap unlocks sound.
-    <div className="screen splash" onClick={onEnter} role="button" tabIndex={0} aria-label="Start">
+    <div className="screen splash" onClick={onEnter} role="button" tabIndex={0} aria-label="Play free now">
       <div className="splash-inner">
-        <p className="eyebrow">A survival game where the rules break</p>
+        <p className="eyebrow">Free browser arcade game · no download · no sign-up</p>
         <h1 className="logo logo-xl" data-text="CHAOS THEORY">
           <span>CHAOS</span>
           <span>THEORY</span>
         </h1>
-        <p className="press">{isTouch ? 'Tap to start' : 'Press any key'}</p>
+        <p className="splash-pitch">Dodge, survive and adapt while the rules rewrite themselves every few seconds.</p>
+        <ul className="splash-points">
+          <li>10 arenas and a boss fight</li>
+          <li>Private rooms with up to 6 friends</li>
+          <li>Phone or desktop, in seconds</li>
+        </ul>
+        <p className="press">{isTouch ? 'Tap anywhere to play free' : 'Click or press any key to play free'}</p>
+        <button
+          type="button"
+          className="btn btn-small splash-friends"
+          onClick={(e) => {
+            e.stopPropagation();
+            onFriends();
+          }}
+        >
+          Play with friends →
+        </button>
         <p className="splash-foot">Best with sound on</p>
       </div>
     </div>
@@ -111,7 +130,7 @@ export function HomeScreen(props: {
             ★ {totalStars(p)}
             <span className="dim">/{maxStars()}</span>
           </span>
-          {p.premiumDemo && <span className="plus-chip">Cosmetics preview</span>}
+          {hasVerifiedChaosPlus() ? <span className="plus-chip">Chaos+</span> : p.premiumDemo && PREVIEW_AVAILABLE && <span className="plus-chip">Cosmetics preview</span>}
           <SoundToggle muted={props.muted} audioState={props.audioState} onToggle={props.onToggleSound} onEnable={props.onEnableSound} />
         </div>
       </header>
@@ -142,7 +161,7 @@ export function HomeScreen(props: {
           <ModeTile title="Levels" meta={`${cleared}/${STAGES.length} cleared`} glyph="map" onClick={props.onLevels} />
           <ModeTile title="Endless Modes" meta="4 modes · always unlocked" glyph="infinity" onClick={props.onModes} featured />
           <ModeTile title="Daily" meta={`${props.daily.mutator.name}${props.daily.best ? ` · ${props.daily.best.toLocaleString()}` : ''}`} glyph="sun" onClick={props.onDaily} />
-          <ModeTile title="Trials" meta={p.premiumDemo ? `${TRIALS.length} bonus challenges` : 'Chaos+'} glyph="bolt" onClick={props.onTrials} badge={!p.premiumDemo ? 'Plus' : undefined} />
+          <ModeTile title="Trials" meta={chaosPlusUnlocked(p) ? `${TRIALS.length} bonus challenges` : 'Chaos+'} glyph="bolt" onClick={props.onTrials} badge={!chaosPlusUnlocked(p) ? 'Plus' : undefined} />
           <ModeTile title="Multiplayer" meta="Private rooms · 2–6 players" glyph="players" onClick={props.onMultiplayer} wide />
         </section>
 
@@ -180,7 +199,7 @@ export function HomeScreen(props: {
         </button>
         <button type="button" onClick={props.onRecords}>Records</button>
         <button type="button" onClick={props.onPremium} className="nav-plus">
-          Chaos+ Ad-Free
+          Chaos+
         </button>
         <button type="button" onClick={props.onSettings}>Settings</button>
         <button type="button" onClick={props.onTutorial}>How to play</button>
@@ -512,12 +531,12 @@ export function RecordsScreen({ progress: p, onBack }: { progress: Progress; onB
   );
 }
 
-// ---------- Chaos+ (demo premium tier) ----------
+// ---------- Chaos+ ----------
 
 const PREMIUM_STATUS_TEXT: Record<PremiumStatus, string> = {
   loading: 'Checking purchase status…',
-  free: 'Free version · no verified purchase on this device',
-  premium: 'Chaos+ Ad-Free active (verified purchase)',
+  free: 'Not purchased on this device',
+  premium: 'Chaos+ active · verified purchase',
   unavailable: 'Purchase status could not be checked right now',
 };
 
@@ -526,84 +545,181 @@ export function PremiumScreen(props: {
   premiumStatus: PremiumStatus;
   onPreviewCosmetics: (on: boolean) => void;
   onPlayTrial: (i: number) => void;
+  onLicenseActivated: () => void;
+  onLicenseRemoved: () => void;
+  onCheckout: () => void;
+  onLegal: () => void;
   onBack: () => void;
 }) {
   const p = props.progress;
-  const premiumShapes = SHAPES.filter((s) => s.premium);
+  const owned = props.premiumStatus === 'premium';
+  const premiumShapes = SHAPES.filter((sh) => sh.premium);
   const premiumThemes = THEMES.filter((t) => t.premium);
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const trialsOpen = chaosPlusUnlocked(p);
+
+  const activate = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    const r = await activateLicense(key);
+    setBusy(false);
+    if (r.ok) {
+      setKey('');
+      props.onLicenseActivated();
+    } else setMsg(LICENSE_MESSAGES[r.reason]);
+  };
+
   return (
     <div className="screen premium">
       <header className="screen-top">
         <BackButton onClick={props.onBack} />
         <h2 className="screen-heading">Chaos+</h2>
-        <span className="demo-pill">Coming soon</span>
+        {owned ? <span className="plus-chip">Supporter</span> : !STORE ? <span className="demo-pill">Coming soon</span> : <span />}
       </header>
       <div className="screen-scroll">
         <section className="plus-hero">
-          <p className="eyebrow">Optional upgrade · no gameplay advantage</p>
+          <p className="eyebrow">Optional one-time purchase · no gameplay advantage</p>
           <h1 className="plus-logo">
             CHAOS<span>+</span>
           </h1>
-          <p className="hero-tag">A one-time upgrade that removes advertising and adds the Chaos+ collection. The full game stays free to play and finish.</p>
+          <p className="hero-tag">
+            {owned
+              ? 'Thank you for supporting Chaos Theory. Your Chaos+ items are unlocked on this device.'
+              : 'Support an independent game and get a supporter badge plus effects nobody else can unlock. Every level, mode and multiplayer room stays free.'}
+          </p>
+        </section>
+
+        <section className="plus-buy">
+          <p className="plus-status">{PREMIUM_STATUS_TEXT[props.premiumStatus]}</p>
+          {STORE && !owned && (
+            <>
+              <a className="play-now play-now-plus" href={STORE.checkoutUrl} target="_blank" rel="noopener noreferrer" onClick={props.onCheckout}>
+                <span className="play-now-label">Get Chaos+ · {STORE.price}</span>
+                <span className="play-now-sub">One-time payment on Gumroad. Taxes, if any, are shown at checkout</span>
+              </a>
+              <ol className="plus-steps">
+                <li>Pay on Gumroad&rsquo;s secure checkout (opens in a new tab). Gumroad handles the payment, receipt and any tax.</li>
+                <li>Gumroad emails you a license key.</li>
+                <li>Paste the key below. Our server checks it with Gumroad before anything unlocks.</li>
+              </ol>
+              <form className="account-form plus-key" onSubmit={(e) => void activate(e)}>
+                <label>
+                  License key
+                  <input
+                    value={key}
+                    onChange={(e) => setKey(e.target.value)}
+                    placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX"
+                    autoComplete="off"
+                    spellCheck={false}
+                    autoCapitalize="characters"
+                    required
+                  />
+                </label>
+                <button type="submit" className="btn btn-primary" disabled={busy}>
+                  {busy ? 'Checking with Gumroad…' : 'Activate Chaos+'}
+                </button>
+              </form>
+              {msg && (
+                <p className="account-message" role="alert">
+                  {msg}
+                </p>
+              )}
+            </>
+          )}
+          {!STORE && (
+            <>
+              <button type="button" className="play-now play-now-plus" disabled aria-disabled="true">
+                <span className="play-now-label">Coming soon</span>
+                <span className="play-now-sub">Purchases open once the store is set up</span>
+              </button>
+              <p className="dim small">No payment is possible today, and nothing on this page charges money.</p>
+            </>
+          )}
+          {owned && (
+            <button type="button" className="btn btn-small" onClick={() => {
+              forgetLicense();
+              props.onLicenseRemoved();
+            }}>
+              Remove Chaos+ from this device
+            </button>
+          )}
+          {STORE && (
+            <p className="dim small">
+              Questions, a lost key or a refund: <span className="select">{STORE.supportEmail}</span> ·{' '}
+              <button type="button" className="link-btn" onClick={props.onLegal}>
+                Refunds, terms and privacy
+              </button>
+            </p>
+          )}
         </section>
 
         <section className="perk-grid">
-          <Perk title="No ads" text="Removes every ad placement: lobby, level select, results and profile. Only a server-verified purchase can switch ads off.">
-            <span className="perk-art perk-icon">⊘</span>
+          <Perk title="Supporter badge" text="A Chaos+ badge on your profile and on the score cards you share.">
+            <span className="perk-art perk-icon">★</span>
           </Perk>
-          <Perk title="Everything stays free" text="All 10 levels, Endless Modes, multiplayer, challenges, XP, trails and victory effects stay free for everyone.">
-            <span className="perk-art perk-icon">∞</span>
-          </Perk>
-          <Perk title="Fair play" text="No extra lives, no easier levels, no score boosts. Only cosmetics.">
-            <span className="perk-art perk-icon">=</span>
-          </Perk>
-          <Perk title="Chaos+ collection" text="Two premium skins, two neon themes and two bonus trials. Free to try in the preview below until purchases open.">
+          <Perk title="Chaos+ only effects" text="The Halo trail and the Supernova victory effect. They cannot be unlocked by playing; only with Chaos+.">
             <span className="perk-art">
-              {premiumShapes.map((s) => (
-                <ShapePreview key={s.id} shape={s.id} size={30} />
+              <span className="trail-art trail-halo" />
+              <span className="win-art win-supernova" />
+            </span>
+          </Perk>
+          <Perk
+            title="Chaos+ collection"
+            text={`Two skins, two neon themes and two bonus trials.${PREVIEW_AVAILABLE ? ' Free to try in the preview below until purchases open.' : ''}`}
+          >
+            <span className="perk-art">
+              {premiumShapes.map((sh) => (
+                <ShapePreview key={sh.id} shape={sh.id} size={30} />
               ))}
               {premiumThemes.map((t) => (
                 <span key={t.id} className="swatch-lg" style={{ background: t.arena, boxShadow: `inset 0 0 0 2px ${rgb(t.accent)}, 0 0 12px ${rgb(t.accent)}` }} />
               ))}
             </span>
           </Perk>
+          <Perk title="No ads, ever" text="The game has no ads today. If ads are ever added, Chaos+ supporters will not see them.">
+            <span className="perk-art perk-icon">⊘</span>
+          </Perk>
+          <Perk title="Everything stays free" text="All 10 levels, Endless Modes, multiplayer, challenges, XP and the earned trails and victory effects stay free for everyone.">
+            <span className="perk-art perk-icon">∞</span>
+          </Perk>
         </section>
 
-        <section className="plus-buy">
-          <p className="plus-status">{PREMIUM_STATUS_TEXT[props.premiumStatus]}</p>
-          <button type="button" className="play-now play-now-plus" disabled={!PURCHASES_AVAILABLE} aria-disabled={!PURCHASES_AVAILABLE}>
-            <span className="play-now-label">{PURCHASES_AVAILABLE ? 'Get Chaos+ Ad-Free' : 'Coming soon'}</span>
-            <span className="play-now-sub">Purchases open once a payment provider and verification server are set up</span>
-          </button>
-          <p className="dim small">No payment is possible today, and nothing on this page charges money.</p>
-        </section>
 
-        <section className="plus-owned">
-          <h3 className="section-title">Cosmetics preview</h3>
-          <p className="dim small">
-            Try the Chaos+ skins, themes and trials for free while purchases are unavailable. This is a demo preview: it is not a
-            purchase and it does not remove ads.
-          </p>
-          <button type="button" className="btn btn-small" onClick={() => props.onPreviewCosmetics(!p.premiumDemo)}>
-            {p.premiumDemo ? 'Turn off cosmetics preview' : 'Preview cosmetics (demo)'}
-          </button>
-          {p.premiumDemo && (
-            <div className="trial-list">
-              {TRIALS.map((t, i) => (
-                <div key={t.name} className="trial" style={{ '--lvl': rgb(t.accent) } as CSSProperties}>
-                  <span className="trial-text">
-                    <span className="trial-name">{t.name}</span>
-                    <span className="dim">{t.tagline}</span>
-                    <span className="dim">Best {(p.trialBest[i] ?? 0).toLocaleString()}</span>
-                  </span>
-                  <button type="button" className="btn btn-primary btn-small" onClick={() => props.onPlayTrial(i)}>
-                    Play
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+        {(PREVIEW_AVAILABLE || trialsOpen) && (
+          <section className="plus-owned">
+            <h3 className="section-title">{PREVIEW_AVAILABLE && !owned ? 'Cosmetics preview' : 'Bonus trials'}</h3>
+            {PREVIEW_AVAILABLE && !owned && (
+              <>
+                <p className="dim small">
+                  Try the Chaos+ collection and trials for free while purchases are unavailable. This is a preview: it is not a purchase, and it does not include the
+                  supporter badge or the Chaos+ only effects.
+                </p>
+                <button type="button" className="btn btn-small" onClick={() => props.onPreviewCosmetics(!p.premiumDemo)}>
+                  {p.premiumDemo ? 'Turn off cosmetics preview' : 'Preview cosmetics (free)'}
+                </button>
+              </>
+            )}
+            {trialsOpen && (
+              <div className="trial-list">
+                {TRIALS.map((t, i) => (
+                  <div key={t.name} className="trial" style={{ '--lvl': rgb(t.accent) } as CSSProperties}>
+                    <span className="trial-text">
+                      <span className="trial-name">{t.name}</span>
+                      <span className="dim">{t.tagline}</span>
+                      <span className="dim">Best {(p.trialBest[i] ?? 0).toLocaleString()}</span>
+                    </span>
+                    <button type="button" className="btn btn-primary btn-small" onClick={() => props.onPlayTrial(i)}>
+                      Play
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
       </div>
     </div>
   );

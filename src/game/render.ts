@@ -731,6 +731,18 @@ function drawCosmeticTrail(ctx: CanvasRenderingContext2D, s: GameState, style: s
   pts.push({ x: s.player.x, y: s.player.y, t: s.time } as (typeof s.trail)[number]);
   if (pts.length < 2) return;
   ctx.lineCap = 'round';
+  if (style === 'halo') {
+    // Chaos+ only: thin golden rings that widen as they fade.
+    for (let i = 0; i < pts.length - 1; i += 3) {
+      const a = 1 - (s.time - pts[i].t) / 0.5;
+      ctx.beginPath();
+      ctx.arc(pts[i].x, pts[i].y, 4 + (1 - a) * 12, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255, 213, 74, ${0.55 * a})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    return;
+  }
   if (style === 'beads') {
     for (let i = 0; i < pts.length - 1; i += 2) {
       const a = 1 - (s.time - pts[i].t) / 0.5;

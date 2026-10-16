@@ -219,14 +219,16 @@ export function addHistory(history: MatchEntry[], entry: MatchEntry): MatchEntry
 
 // ---------- Trail and victory cosmetics (unlocked by account level) ----------
 
-export type TrailId = 'classic' | 'comet' | 'beads' | 'prism';
-export type VictoryId = 'confetti' | 'shockwave' | 'fireworks' | 'starfall';
+export type TrailId = 'classic' | 'comet' | 'beads' | 'prism' | 'halo';
+export type VictoryId = 'confetti' | 'shockwave' | 'fireworks' | 'starfall' | 'supernova';
 
 export interface LevelCosmetic<T extends string> {
   id: T;
   name: string;
   level: number; // account level that unlocks it
   blurb: string;
+  /** Chaos+ only: needs a server-verified purchase, never unlocked by playing. */
+  premium?: boolean;
 }
 
 export const TRAILS: readonly LevelCosmetic<TrailId>[] = [
@@ -234,6 +236,7 @@ export const TRAILS: readonly LevelCosmetic<TrailId>[] = [
   { id: 'comet', name: 'Comet', level: 3, blurb: 'A brighter tail that tapers away.' },
   { id: 'beads', name: 'Beads', level: 6, blurb: 'A string of fading lights.' },
   { id: 'prism', name: 'Prism', level: 10, blurb: 'Shifts through the spectrum as you move.' },
+  { id: 'halo', name: 'Halo', level: 1, blurb: 'Golden rings trail behind you. Chaos+ supporters only.', premium: true },
 ];
 
 export const VICTORIES: readonly LevelCosmetic<VictoryId>[] = [
@@ -241,21 +244,22 @@ export const VICTORIES: readonly LevelCosmetic<VictoryId>[] = [
   { id: 'shockwave', name: 'Shockwave', level: 4, blurb: 'Rings of light ripple out.' },
   { id: 'fireworks', name: 'Fireworks', level: 8, blurb: 'Bursts across the whole arena.' },
   { id: 'starfall', name: 'Starfall', level: 12, blurb: 'Light rains down from above.' },
+  { id: 'supernova', name: 'Supernova', level: 1, blurb: 'A golden blast that fills the arena. Chaos+ supporters only.', premium: true },
 ];
 
-export const cosmeticUnlocked = (c: LevelCosmetic<string>, xp: number) => levelFromXp(xp).level >= c.level;
+export const cosmeticUnlocked = (c: LevelCosmetic<string>, xp: number, chaosPlus = false) => (c.premium ? chaosPlus : levelFromXp(xp).level >= c.level);
 
 /** Cosmetics that became available between two XP totals (for the rewards screen). */
 export function unlockedBetween(before: number, after: number): string[] {
   const a = levelFromXp(before).level;
   const b = levelFromXp(after).level;
   return [...TRAILS.map((t) => ({ ...t, kind: 'trail' })), ...VICTORIES.map((v) => ({ ...v, kind: 'victory effect' }))]
-    .filter((c) => c.level > a && c.level <= b)
+    .filter((c) => !c.premium && c.level > a && c.level <= b)
     .map((c) => `${c.name} ${c.kind}`);
 }
 
 /** The equipped cosmetic if it is unlocked at this XP, otherwise the free default. */
-export function equipped<T extends string>(list: readonly LevelCosmetic<T>[], id: string, xp: number): T {
+export function equipped<T extends string>(list: readonly LevelCosmetic<T>[], id: string, xp: number, chaosPlus = false): T {
   const c = list.find((x) => x.id === id);
-  return c && cosmeticUnlocked(c, xp) ? c.id : list[0].id;
+  return c && cosmeticUnlocked(c, xp, chaosPlus) ? c.id : list[0].id;
 }

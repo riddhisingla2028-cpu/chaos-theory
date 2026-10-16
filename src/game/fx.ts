@@ -126,6 +126,12 @@ export class Fx {
           this.particles.push({ x: Math.random() * 1000, y: -40 - Math.random() * 300, vx: (Math.random() - 0.5) * 40, vy: 700 + Math.random() * 500, life: l, max: l, size: 4 + Math.random() * 6, accent: false, color: colors[i % colors.length] });
         }
         break;
+      case 'supernova':
+        // Chaos+ only: a golden core blast with rings.
+        for (let i = 0; i < 3; i++) this.ring(cx, cy, '#FFD54A', i * 0.15, 1100);
+        this.confetti(cx, cy, 90, ['#FFD54A', '#FFF3C4', '#F3F0EA']);
+        this.flash = Math.max(this.flash, 0.6);
+        break;
       default:
         this.confetti(cx, cy, 60, colors);
     }

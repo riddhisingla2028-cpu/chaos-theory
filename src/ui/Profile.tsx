@@ -1,6 +1,6 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { STAGES, objectiveText } from '../game/stages';
-import { accountLevel, totalStars, maxStars, levelsCleared, type Progress } from '../progress';
+import { accountLevel, hasVerifiedChaosPlus, totalStars, maxStars, levelsCleared, type Progress } from '../progress';
 import { HISTORY_KEEP, challengeById, currentChallenges, MAX_ACCOUNT_LEVEL, type ChallengeSet } from '../progression';
 import { AdSlot } from './AdSlot';
 import { BackButton, ShapePreview, Stars } from './common';
@@ -90,6 +90,7 @@ export function ProfileScreen(props: { progress: Progress; account: ReactNode; o
             <p className="profile-level">
               Level <strong>{lvl.level}</strong>
               {lvl.level >= MAX_ACCOUNT_LEVEL && <span className="dim"> · max</span>}
+              {hasVerifiedChaosPlus() && <span className="plus-chip profile-badge">Chaos+ supporter</span>}
             </p>
             <div className="xp-bar" role="progressbar" aria-label="XP to next level" aria-valuemin={0} aria-valuemax={lvl.need || 1} aria-valuenow={lvl.into}>
               <span style={{ '--from': 0, '--to': lvl.need ? lvl.into / lvl.need : 1 } as CSSProperties} />

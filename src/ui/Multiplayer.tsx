@@ -5,6 +5,7 @@ import { MATCH_MODES, matchMode, type MatchMode } from '../net/match';
 import { ClientRoom, HostRoom, cleanName, makeRoomCode, normaliseCode, type RoomView } from '../net/room';
 import { hostRoom, joinRoom, type HostEndpoint } from '../net/peer';
 import { BackButton, ShapePreview } from './common';
+import { track } from '../analytics';
 import type { ShapeId } from '../progress';
 
 const NAME_KEY = 'chaos-theory.mp.name';
@@ -104,6 +105,7 @@ export function MultiplayerScreen(props: { shape: ShapeId; isTouch: boolean; ini
           () => setError('Lost contact with the matchmaking service. Players already in the room can keep playing.'),
         );
         setSession({ kind: 'host', room, endpoint });
+        track('mp_room_created', { mode });
         setBusy(null);
         return;
       } catch (e) {
@@ -130,6 +132,7 @@ export function MultiplayerScreen(props: { shape: ShapeId; isTouch: boolean; ini
     const room = new ClientRoom(() => joinRoom(c), c, { token, name: finalName, shape: props.shape });
     setSession({ kind: 'client', room });
     await room.open();
+    if (room.view.status !== 'closed') track('mp_room_joined');
     setBusy(null);
   };
 
@@ -319,7 +322,7 @@ function Lobby({ session, view, onLeave }: { session: Session; view: RoomView; o
       <div className="mp-actions">
         {host ? (
           <>
-            <button type="button" className="btn btn-primary btn-wide" disabled={!startable} onClick={() => host.start()}>
+            <button type="button" className="btn btn-primary btn-wide" disabled={!startable} onClick={() => host.start() && track('mp_match_started', { mode: view.mode, players: connected.length })}>
               Start match
             </button>
             {!startable && <p className="mp-hint">{why}</p>}

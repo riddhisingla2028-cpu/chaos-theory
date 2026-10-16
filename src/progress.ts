@@ -4,6 +4,7 @@
 import { CHAOS_KINDS, type ChaosKind, type GameMode } from './game/engine';
 import { ENDLESS_MODES, STAGES, TRIALS, starsFor, type EndlessId } from './game/stages';
 import { BEST_KEY, loadBest, type KeyValueStore } from './storage';
+import { PURCHASES_AVAILABLE } from './monetization/entitlements';
 import {
   addHistory,
   applyChallenges,
@@ -191,6 +192,17 @@ export function defaultProgress(): Progress {
 // ---------- Queries ----------
 
 export const accountLevel = (p: Progress) => levelFromXp(p.xp);
+// Chaos+ items unlock only with a server-verified purchase (set by the app from the entitlement
+// service). While purchases are not live, the free, clearly labelled preview may show them instead.
+let verifiedChaosPlus = false;
+export function setVerifiedChaosPlus(on: boolean): void {
+  verifiedChaosPlus = on;
+}
+export const hasVerifiedChaosPlus = () => verifiedChaosPlus;
+export const chaosPlusUnlocked = (p: Progress) => verifiedChaosPlus || (!PURCHASES_AVAILABLE && p.premiumDemo);
+/** The cosmetics preview only exists until real purchases open. */
+export const PREVIEW_AVAILABLE = !PURCHASES_AVAILABLE;
+
 export const isCleared = (p: Progress, stage: number) => p.stages[stage] !== undefined;
 export const isSkipped = (p: Progress, stage: number) => p.skipped.includes(stage);
 export const isStageUnlocked = (p: Progress, stage: number) =>
@@ -258,8 +270,8 @@ export const SHAPES: readonly ShapeDef[] = [
   { id: 'triangle', name: 'Triangle', req: 'Clear Level 4', unlocked: (p) => isCleared(p, 3) },
   { id: 'hexagon', name: 'Hexagon', req: 'Clear Level 7', unlocked: (p) => isCleared(p, 6) },
   { id: 'star', name: 'Star', req: 'Defeat the Core', unlocked: (p) => isCleared(p, 9) },
-  { id: 'nova', name: 'Nova', req: 'Chaos+', premium: true, unlocked: (p) => p.premiumDemo },
-  { id: 'spark', name: 'Spark', req: 'Chaos+', premium: true, unlocked: (p) => p.premiumDemo },
+  { id: 'nova', name: 'Nova', req: 'Chaos+', premium: true, unlocked: chaosPlusUnlocked },
+  { id: 'spark', name: 'Spark', req: 'Chaos+', premium: true, unlocked: chaosPlusUnlocked },
 ];
 
 export interface ThemeDef {
@@ -278,8 +290,8 @@ export const THEMES: readonly ThemeDef[] = [
   { id: 'verdant', name: 'Verdant', req: 'Play a daily challenge', arena: '#0f1511', accent: [79, 163, 116], unlocked: (p) => p.dailyPlays >= 1 },
   { id: 'ember', name: 'Ember', req: 'Earn 10 stars', arena: '#15110d', accent: [217, 120, 59], unlocked: (p) => totalStars(p) >= 10 },
   { id: 'aurum', name: 'Aurum', req: 'Earn 6 achievements', arena: '#14120c', accent: [201, 165, 75], unlocked: (p) => p.achievements.length >= 6 },
-  { id: 'synthwave', name: 'Synthwave', req: 'Chaos+', arena: '#120a1c', accent: [255, 79, 216], premium: true, unlocked: (p) => p.premiumDemo },
-  { id: 'aurora', name: 'Aurora', req: 'Chaos+', arena: '#08141a', accent: [79, 227, 240], premium: true, unlocked: (p) => p.premiumDemo },
+  { id: 'synthwave', name: 'Synthwave', req: 'Chaos+', arena: '#120a1c', accent: [255, 79, 216], premium: true, unlocked: chaosPlusUnlocked },
+  { id: 'aurora', name: 'Aurora', req: 'Chaos+', arena: '#08141a', accent: [79, 227, 240], premium: true, unlocked: chaosPlusUnlocked },
 ];
 
 export const themeById = (id: ThemeId) => THEMES.find((t) => t.id === id) ?? THEMES[0];

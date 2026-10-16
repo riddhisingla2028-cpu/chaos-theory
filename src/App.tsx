@@ -38,6 +38,8 @@ import {
   type Progress,
   type RunSummary,
   type Settings,
+  hasVerifiedChaosPlus,
+  setVerifiedChaosPlus,
 } from './progress';
 import { TRAILS, VICTORIES, equipped } from './progression';
 import { IconButton, PauseIcon, PlayIcon, SoundToggle } from './ui/common';
@@ -46,6 +48,8 @@ import { GameOverScreen, PausedScreen, VictoryScreen, type Result } from './ui/R
 import { HomeScreen, LevelMap, ModesScreen, PremiumScreen, RecordsScreen, SplashScreen } from './ui/Lobby';
 import { LobbyBackground } from './ui/LobbyBackground';
 import { ProfileScreen } from './ui/Profile';
+import { LegalScreen } from './ui/Legal';
+import { initAnalytics, track } from './analytics';
 import { MultiplayerScreen, inviteCodeFromUrl } from './ui/Multiplayer';
 import { AccountPanel, GuestOnlyNotice } from './ui/AccountPanel';
 import { AccountService, CLOUD_CONFIG, createSupabaseClient, type AccountState, type CloudClient } from './cloud/account';
@@ -62,6 +66,7 @@ type Screen =
   | 'records'
   | 'profile'
   | 'multiplayer'
+  | 'legal'
   | 'settings'
   | 'premium'
   | 'tutorial'
@@ -70,7 +75,7 @@ type Screen =
   | 'over'
   | 'won';
 
-const LOBBY: ReadonlySet<Screen> = new Set(['splash', 'home', 'levels', 'modes', 'collection', 'records', 'profile', 'multiplayer', 'settings', 'premium', 'tutorial']);
+const LOBBY: ReadonlySet<Screen> = new Set(['splash', 'home', 'levels', 'modes', 'collection', 'records', 'profile', 'multiplayer', 'legal', 'settings', 'premium', 'tutorial']);
 
 type RGB = [number, number, number];
 const CYAN: RGB = [79, 227, 240];
@@ -260,9 +265,14 @@ export default function App() {
 
   // Entitlement is resolved once, centrally; ad slots read it through AdsContext.
   const [premiumStatus, setPremiumStatus] = useState<PremiumStatus>('loading');
+  useEffect(() => initAnalytics(), []);
   useEffect(() => {
     let live = true;
-    void resolvePremiumStatus().then((st) => live && setPremiumStatus(st));
+    void resolvePremiumStatus().then((st) => {
+      if (!live) return;
+      setVerifiedChaosPlus(st === 'premium');
+      setPremiumStatus(st);
+    });
     return () => {
       live = false;
     };
@@ -379,6 +389,7 @@ export default function App() {
     const prev = screenRef.current;
     screenRef.current = next;
     setScreenState(next);
+    if (next === 'premium' && prev !== 'premium') track('chaosplus_view');
     if (LOBBY.has(prev) && LOBBY.has(next) && prev !== next && prev !== 'splash') sfxRef.current.play('whoosh');
   }, []);
 
@@ -422,6 +433,7 @@ export default function App() {
     (run: Run) => {
       sfxRef.current.unlock();
       runRef.current = run;
+      track('game_start', { mode: run.config.mode, level: run.config.stage + 1 });
       gameRef.current = createGame(run.seed, run.config);
       inputRef.current.reset();
       fxRef.current.reset();
@@ -451,6 +463,7 @@ export default function App() {
   );
 
   const playNext = useCallback(() => {
+    track('play_click');
     const n = nextStage(progressRef.current);
     beginRun(n >= 0 ? makeStageRun(n) : makeEndlessRun());
   }, [beginRun]);
@@ -527,6 +540,7 @@ export default function App() {
         dateKey: run.dateKey,
       };
       const outcome = applyRun(progressRef.current, summary);
+      if (won) track('game_complete', { mode: run.config.mode, level: run.config.stage + 1 });
       updateProgress(outcome.progress);
       // Compare with the previous attempt at the same thing, so every run shows progress.
       const attemptKey = `${run.config.mode}:${run.config.stage}`;
@@ -676,7 +690,7 @@ export default function App() {
         }
         break;
       case 'victory':
-        fx.victory(equipped(VICTORIES, progressRef.current.settings.victory, progressRef.current.xp), ARENA / 2, ARENA / 2, [glow, '#FF4FD8', '#4FE3F0', '#FFD54A', '#F3F0EA']);
+        fx.victory(equipped(VICTORIES, progressRef.current.settings.victory, progressRef.current.xp, hasVerifiedChaosPlus()), ARENA / 2, ARENA / 2, [glow, '#FF4FD8', '#4FE3F0', '#FFD54A', '#F3F0EA']);
         sfx.play('win');
         break;
     }
@@ -723,6 +737,7 @@ export default function App() {
         case 'Escape':
           if (s === 'playing') pause();
           else if (s === 'paused') resume();
+          else if (s === 'legal') setScreen('premium');
           else if (s === 'levels' || s === 'modes' || s === 'collection' || s === 'records' || s === 'profile' || s === 'settings' || s === 'premium') setScreen('home');
           break;
         case 'KeyR':
@@ -756,12 +771,12 @@ export default function App() {
     };
   });
 
-  function enterFromSplash() {
+  function enterFromSplash(target?: Screen) {
     if (screenRef.current !== 'splash') return;
     const sfx = sfxRef.current;
     if (!progressRef.current.settings.muted) void sfx.unlock().then(() => sfx.play('boot'));
     // An invite link (?room=CODE) goes straight to Multiplayer with the code filled in.
-    setScreen(inviteCodeRef.current ? 'multiplayer' : 'home');
+    setScreen(target ?? (inviteCodeRef.current ? 'multiplayer' : 'home'));
   }
 
   // Ask before leaving or refreshing the page in the middle of a real run.
@@ -871,7 +886,7 @@ export default function App() {
           motif: run.motif,
           heat: run.heat,
           shake: st.shake && !reducedMotionRef.current,
-          trail: equipped(TRAILS, st.trail, progressRef.current.xp),
+          trail: equipped(TRAILS, st.trail, progressRef.current.xp, hasVerifiedChaosPlus()),
         };
         drawGame(ctx, g, sizeRef.current, dprRef.current, now / 1000, fx, look);
       }
@@ -1128,7 +1143,7 @@ export default function App() {
       {lobby && (
         <div className="lobby">
           <LobbyBackground accent={lobbyAccent} still={reducedMotion} />
-          {screen === 'splash' && <SplashScreen isTouch={isTouch} onEnter={enterFromSplash} />}
+          {screen === 'splash' && <SplashScreen isTouch={isTouch} onEnter={() => enterFromSplash()} onFriends={() => enterFromSplash('multiplayer')} />}
           {(screen === 'home' || screen === 'tutorial') && (
             <HomeScreen
               progress={progress}
@@ -1197,6 +1212,7 @@ export default function App() {
               onInMatch={setMpPlaying}
             />
           )}
+          {screen === 'legal' && <LegalScreen onBack={() => setScreen('premium')} />}
           {screen === 'profile' && (
             <ProfileScreen
               progress={progress}
@@ -1221,6 +1237,18 @@ export default function App() {
                 if (on) sfxRef.current.play('unlock');
               }}
               onPlayTrial={(i) => beginRun(makeTrialRun(i))}
+              onLicenseActivated={() => {
+                track('purchase_verified');
+                setVerifiedChaosPlus(true);
+                setPremiumStatus('premium');
+                sfxRef.current.play('unlock');
+              }}
+              onLicenseRemoved={() => {
+                setVerifiedChaosPlus(false);
+                setPremiumStatus('free');
+              }}
+              onCheckout={() => track('checkout_start')}
+              onLegal={() => setScreen('legal')}
               onBack={() => setScreen('home')}
             />
           )}

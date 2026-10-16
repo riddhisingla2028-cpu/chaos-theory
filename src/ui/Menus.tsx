@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ACHIEVEMENTS, SHAPES, THEMES, accountLevel, type MotionPref, type Progress, type Settings, type ShapeId, type ThemeId } from '../progress';
+import { ACHIEVEMENTS, SHAPES, THEMES, accountLevel, hasVerifiedChaosPlus, type MotionPref, type Progress, type Settings, type ShapeId, type ThemeId } from '../progress';
 import { TRAILS, VICTORIES, type LevelCosmetic, type TrailId, type VictoryId } from '../progression';
 import { BackButton, LockIcon, Overlay, ShapePreview } from './common';
 
@@ -21,13 +21,20 @@ export function Collection(props: {
   const levelPicks = <T extends string>(list: readonly LevelCosmetic<T>[], current: T, onPick: (id: T) => void, art: (id: T) => JSX.Element) => (
     <div className="pick-grid">
       {list.map((c) => {
-        const open = level >= c.level;
-        const on = current === c.id;
+        const open = c.premium ? hasVerifiedChaosPlus() : level >= c.level;
+        const on = current === c.id && open;
         return (
-          <button key={c.id} type="button" className={`pick${on ? ' pick-on' : ''}${open ? '' : ' locked'}`} onClick={() => open && onPick(c.id)} aria-disabled={!open}>
+          <button
+            key={c.id}
+            type="button"
+            className={`pick${on ? ' pick-on' : ''}${open ? '' : ' locked'}${c.premium ? ' pick-plus' : ''}`}
+            onClick={() => (open ? onPick(c.id) : c.premium ? props.onPremium() : undefined)}
+            aria-disabled={!open}
+          >
+            {c.premium && <span className="pick-badge">Plus</span>}
             <span className="pick-art">{open ? art(c.id) : <LockIcon />}</span>
             <span className="pick-name">{c.name}</span>
-            <span className="pick-req">{on ? 'Equipped' : open ? c.blurb : `Reach account level ${c.level}`}</span>
+            <span className="pick-req">{on ? 'Equipped' : open ? c.blurb : c.premium ? 'Chaos+ supporters only' : `Reach account level ${c.level}`}</span>
           </button>
         );
       })}

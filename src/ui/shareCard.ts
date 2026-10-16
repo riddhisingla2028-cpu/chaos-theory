@@ -8,6 +8,7 @@ export interface CardData {
   stats: [string, string][]; // up to three label/value pairs
   stars: number | null; // 0-3, or null when the mode has no stars
   accountLevel: number;
+  supporter: boolean; // verified Chaos+ purchase
   accent: [number, number, number];
 }
 
@@ -87,7 +88,7 @@ export function drawCard(ctx: CanvasRenderingContext2D, d: CardData): void {
 
   ctx.fillStyle = 'rgba(243, 240, 234, 0.7)';
   ctx.font = `600 30px ${BODY}`;
-  ctx.fillText(`Account level ${d.accountLevel}`, W / 2, 1210);
+  ctx.fillText(d.supporter ? `Chaos+ supporter · Account level ${d.accountLevel}` : `Account level ${d.accountLevel}`, W / 2, 1210);
   ctx.fillStyle = acc(1);
   ctx.font = `600 30px ${BODY}`;
   ctx.fillText('Can you beat it?', W / 2, 1260);

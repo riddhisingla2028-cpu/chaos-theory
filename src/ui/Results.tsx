@@ -1,10 +1,11 @@
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { DeathCause, GameStats } from '../game/engine';
 import { STAGES, TRIALS, endlessMode, objectiveText, starThresholds } from '../game/stages';
-import { SKIP_AFTER_FAILS, isEndlessMode, nextUnlockHint, type ModeBest, type Progress, type RunOutcome, type RunSummary } from '../progress';
+import { SKIP_AFTER_FAILS, hasVerifiedChaosPlus, isEndlessMode, nextUnlockHint, type ModeBest, type Progress, type RunOutcome, type RunSummary } from '../progress';
 import { levelFromXp } from '../progression';
 import { AdSlot } from './AdSlot';
 import { shareCard, type CardData } from './shareCard';
+import { track } from '../analytics';
 import { Overlay, Stars } from './common';
 
 export interface Result {
@@ -156,10 +157,12 @@ function ShareButton({ result }: { result: Result }) {
     ],
     stars: summary.mode === 'stage' && summary.won ? outcome.stars : null,
     accountLevel: levelFromXp(outcome.xpBefore + outcome.xpGained).level,
+    supporter: hasVerifiedChaosPlus(),
     accent: accent as [number, number, number],
   };
   const go = async () => {
     setState('busy');
+    track('share_score', { mode: summary.mode });
     const r = await shareCard(card, `I scored ${summary.score.toLocaleString()} in Chaos Theory. Can you beat it?`);
     setState(r === 'cancelled' ? 'idle' : r);
   };
