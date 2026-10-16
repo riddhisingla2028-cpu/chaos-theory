@@ -17,7 +17,7 @@ import {
   type Progress,
   type RecordEntry,
 } from '../progress';
-import { challengeById, currentChallenges } from '../progression';
+import { challengeById, currentChallenges, weekKeyOf } from '../progression';
 import { LevelPreview } from './LevelPreview';
 import { AdSlot } from './AdSlot';
 import { PURCHASES_AVAILABLE, type PremiumStatus } from '../monetization/entitlements';
@@ -442,8 +442,16 @@ const MODE_TABS: { mode: RecordEntry['mode']; label: string }[] = [
 ];
 
 export function RecordsScreen({ progress: p, onBack }: { progress: Progress; onBack: () => void }) {
-  const [tab, setTab] = useState<RecordEntry['mode']>('endless');
-  const rows = p.records.filter((r) => r.mode === tab).sort((a, b) => b.score - a.score);
+  const [tab, setTab] = useState<RecordEntry['mode'] | 'week'>('endless');
+  const thisWeek = weekKeyOf(new Date());
+  const rows =
+    tab === 'week'
+      ? p.history
+          .filter((h) => h.score > 0 && weekKeyOf(new Date(h.date)) === thisWeek)
+          .map((h) => ({ mode: h.mode, label: h.label, score: h.score, time: h.time, date: h.date }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 10)
+      : p.records.filter((r) => r.mode === tab).sort((a, b) => b.score - a.score);
   const stats: [string, string][] = [
     ['Runs', String(p.runs)],
     ['Time survived', formatDuration(p.totalTime)],
@@ -472,6 +480,9 @@ export function RecordsScreen({ progress: p, onBack }: { progress: Progress; onB
         </section>
         <section className="board">
           <div className="tabs tabs-wrap" role="tablist">
+            <button type="button" role="tab" aria-selected={tab === 'week'} className={`tab${tab === 'week' ? ' tab-on' : ''}`} onClick={() => setTab('week')}>
+              This week
+            </button>
             {MODE_TABS.map((t) => (
               <button key={t.mode} type="button" role="tab" aria-selected={tab === t.mode} className={`tab${tab === t.mode ? ' tab-on' : ''}`} onClick={() => setTab(t.mode)}>
                 {t.label}
@@ -479,7 +490,7 @@ export function RecordsScreen({ progress: p, onBack }: { progress: Progress; onB
             ))}
           </div>
           {rows.length === 0 ? (
-            <p className="board-empty">No runs yet. Your top 10 will appear here.</p>
+            <p className="board-empty">{tab === 'week' ? 'No runs this week yet. Your best runs since Monday will appear here.' : 'No runs yet. Your top 10 will appear here.'}</p>
           ) : (
             <ol className="board-list">
               {rows.map((r, i) => (
@@ -492,7 +503,9 @@ export function RecordsScreen({ progress: p, onBack }: { progress: Progress; onB
               ))}
             </ol>
           )}
-          <p className="board-note">Hall of fame · saved on this device</p>
+          <p className="board-note">
+            Local leaderboard: your own runs on this device only. A global leaderboard needs a server, which is not set up yet.
+          </p>
         </section>
       </div>
     </div>
@@ -531,20 +544,20 @@ export function PremiumScreen(props: {
           <h1 className="plus-logo">
             CHAOS<span>+</span>
           </h1>
-          <p className="hero-tag">Chaos+ Ad-Free removes advertising and adds exclusive looks. The full game stays free to play and finish.</p>
+          <p className="hero-tag">A one-time upgrade that removes advertising and adds the Chaos+ collection. The full game stays free to play and finish.</p>
         </section>
 
         <section className="perk-grid">
-          <Perk title="No ads" text="Advertising is removed from every placement: home, levels and results.">
+          <Perk title="No ads" text="Removes every ad placement: lobby, level select, results and profile. Only a server-verified purchase can switch ads off.">
             <span className="perk-art perk-icon">⊘</span>
           </Perk>
-          <Perk title="Everything stays free" text="All 10 levels, the 4 Endless Modes and the daily challenge remain free for everyone.">
+          <Perk title="Everything stays free" text="All 10 levels, Endless Modes, multiplayer, challenges, XP, trails and victory effects stay free for everyone.">
             <span className="perk-art perk-icon">∞</span>
           </Perk>
           <Perk title="Fair play" text="No extra lives, no easier levels, no score boosts. Only cosmetics.">
             <span className="perk-art perk-icon">=</span>
           </Perk>
-          <Perk title="Exclusive looks" text="Two premium skins, two neon themes and two bonus trials.">
+          <Perk title="Chaos+ collection" text="Two premium skins, two neon themes and two bonus trials. Free to try in the preview below until purchases open.">
             <span className="perk-art">
               {premiumShapes.map((s) => (
                 <ShapePreview key={s.id} shape={s.id} size={30} />

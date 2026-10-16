@@ -1,9 +1,10 @@
-import type { CSSProperties, ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { DeathCause, GameStats } from '../game/engine';
 import { STAGES, TRIALS, endlessMode, objectiveText, starThresholds } from '../game/stages';
 import { SKIP_AFTER_FAILS, isEndlessMode, nextUnlockHint, type ModeBest, type Progress, type RunOutcome, type RunSummary } from '../progress';
 import { levelFromXp } from '../progression';
 import { AdSlot } from './AdSlot';
+import { shareCard, type CardData } from './shareCard';
 import { Overlay, Stars } from './common';
 
 export interface Result {
@@ -134,6 +135,38 @@ function Rewards({ outcome }: { outcome: RunOutcome }) {
         </ul>
       )}
     </section>
+  );
+}
+
+/** Share a score card image (system share sheet on phones, a PNG download elsewhere). */
+function ShareButton({ result }: { result: Result }) {
+  const [state, setState] = useState<'idle' | 'busy' | 'shared' | 'saved' | 'failed'>('idle');
+  const { summary, outcome } = result;
+  const level = summary.mode === 'stage' ? STAGES[summary.stage] : null;
+  const endless = isEndlessMode(summary.mode) ? endlessMode(summary.mode) : null;
+  const accent = level?.accent ?? endless?.accent ?? (summary.mode === 'trial' ? TRIALS[summary.stage].accent : [79, 227, 240]);
+  const card: CardData = {
+    kicker: level ? `Level ${summary.stage + 1} · ${level.name}` : result.label,
+    headline: summary.mode === 'stage' ? (summary.won ? 'Level complete' : 'So close') : outcome.isNewBest ? 'New personal best' : 'Run over',
+    score: summary.score,
+    stats: [
+      ['Time', `${summary.time.toFixed(1)}s`],
+      ...(result.stats.orbs > 0 ? ([['Orbs', String(result.stats.orbs)]] as [string, string][]) : []),
+      ['Near misses', String(result.stats.nearMisses)],
+    ],
+    stars: summary.mode === 'stage' && summary.won ? outcome.stars : null,
+    accountLevel: levelFromXp(outcome.xpBefore + outcome.xpGained).level,
+    accent: accent as [number, number, number],
+  };
+  const go = async () => {
+    setState('busy');
+    const r = await shareCard(card, `I scored ${summary.score.toLocaleString()} in Chaos Theory. Can you beat it?`);
+    setState(r === 'cancelled' ? 'idle' : r);
+  };
+  return (
+    <button type="button" className="btn btn-small" onClick={() => void go()} disabled={state === 'busy'}>
+      {state === 'shared' ? 'Shared' : state === 'saved' ? 'Card saved' : state === 'failed' ? 'Could not share' : 'Share score'}
+    </button>
   );
 }
 
@@ -288,6 +321,7 @@ export function GameOverScreen(props: {
           <button type="button" className="btn btn-small" onClick={props.onMenu}>
             Menu
           </button>
+          {summary.score > 0 && <ShareButton result={props.result} />}
         </div>
         <AdSlot placement="results_banner" className="ad-results" />
       </div>
@@ -347,6 +381,7 @@ function EndlessOverScreen(props: { result: Result; progress: Progress; isTouch:
           <button type="button" className="btn btn-small" onClick={props.onMenu}>
             Menu
           </button>
+          {summary.score > 0 && <ShareButton result={props.result} />}
         </div>
         <AdSlot placement="endless_results_banner" className="ad-results" />
       </div>
@@ -406,6 +441,9 @@ export function VictoryScreen(props: { result: Result; isTouch: boolean; onNext:
           <button type="button" className="btn" onClick={props.onLevels}>
             {trial ? 'Chaos+' : 'Levels'}
           </button>
+        </div>
+        <div className="actions actions-quiet">
+          <ShareButton result={props.result} />
         </div>
         {!props.isTouch && <p className="hint">Enter to continue · R to replay</p>}
         <AdSlot placement="results_banner" className="ad-results" />
