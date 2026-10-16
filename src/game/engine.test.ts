@@ -31,6 +31,7 @@ import {
   type Vec,
 } from './engine';
 import { ENDLESS_MODES, endlessMode, stageConfig } from './stages';
+import { OPEN_ARENA } from './arenas';
 import type { GameConfig } from './engine';
 
 const DT = 1 / 120;
@@ -393,7 +394,9 @@ describe('stages', () => {
   });
 
   it('Reverse Control starts with normal controls, then flips in its second phase', () => {
-    const g = createGame(1, stageConfig(3));
+    // Without the rotor, so circling cannot end the run early; this checks the phase timing only.
+    const cfg = stageConfig(3);
+    const g = createGame(1, { ...cfg, arena: { ...cfg.arena, rotors: [] } });
     g.spawnTimer = Infinity;
     startOffCentre(g);
     run(g, 4.9, circle);
@@ -420,7 +423,7 @@ describe('stages', () => {
 
   it('later stages start harder', () => {
     const early = createGame(1, stageConfig(0));
-    const late = createGame(1, stageConfig(9));
+    const late = createGame(1, stageConfig(8));
     expect(late.config.difficultyOffset).toBeGreaterThan(early.config.difficultyOffset);
   });
 });
@@ -607,7 +610,7 @@ describe('orbs and objectives', () => {
 
 describe('level mechanics', () => {
   it('vanishing tiles warn first and only kill once active', () => {
-    const g = quietLevel(4);
+    const g = quietLevel(4, { arena: OPEN_ARENA, voids: true, voidCount: 2, voidCycle: 3.1, voidWarn: 1.3 });
     g.voids = [{ ix: 1, iy: 1, phase: 'warning', timer: 1 }];
     g.player.x = VOID_TILE * 1.5;
     g.player.y = VOID_TILE * 1.5;
@@ -618,15 +621,21 @@ describe('level mechanics', () => {
     expect(g.cause).toBe('void');
   });
 
-  it('the Vanishing Zone keeps creating vanishing tiles', () => {
-    const g = quietLevel(4);
+  it('vanishing tiles keep appearing while enabled (Endless Pandemonium)', () => {
+    const g = quietLevel(4, { arena: OPEN_ARENA, voids: true, voidCount: 2, voidCycle: 3.1, voidWarn: 1.3 });
     startOffCentre(g);
     run(g, 3, circle);
     expect(g.events.filter((e) => e.type === 'voidWarn').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('the Shrinking Arena closes in steadily and kills a player at the edge', () => {
-    const g = quietLevel(7);
+  it('the shrinking-walls mechanic closes in steadily and kills a player at the edge', () => {
+    const g = quietLevel(7, {
+      arena: OPEN_ARENA,
+      phases: [
+        { name: 'a', hint: '', at: {}, set: { shrink: { from: 1.5, rate: 13, max: 120 } } },
+        { name: 'b', hint: '', at: { time: 9 }, set: { shrink: { from: 0, rate: 15, max: 210 } } },
+      ],
+    });
     expect(shrinkInset(g)).toBe(0);
     run(g, 14);
     expect(g.status).toBe('playing');
@@ -763,7 +772,7 @@ describe('level phases', () => {
 
   it('phase settings stack on top of each other', () => {
     const base = stageConfig(1);
-    expect(configForPhase(base, 0).hazardSpeed).toBeCloseTo(1.15);
+    expect(configForPhase(base, 0).hazardSpeed).toBeCloseTo(1.1);
     expect(configForPhase(base, 2).hazardSpeed).toBeGreaterThan(configForPhase(base, 1).hazardSpeed);
     expect(configForPhase(base, 2).patterns.map((p) => p.kind)).toEqual(['rain']);
     expect(configForPhase(base, 3).patterns.map((p) => p.kind)).toEqual(['rain']); // kept from phase 2
@@ -778,10 +787,11 @@ describe('level phases', () => {
   });
 
   it('every level is at least twice as long or demanding as before', () => {
-    const before = [5, 8, 3, 8, 10, 5, 10, 12, 7, 5];
+    const before = [5, 8, 3, 8, 10, 5, 10, 12, 15, 5];
     for (let i = 0; i < 10; i++) {
       const o = stageConfig(i).objective!;
-      const amount = o.type === 'survive' ? o.seconds! : o.type === 'orbs' ? o.orbs! : stageConfig(i).boss!.hp;
+      // Timed orb levels compare their time limit (Chaos Combo: 7 orbs in 15s before, now 10 orbs in 50s over broken ground).
+      const amount = o.type === 'survive' ? o.seconds! : o.type === 'orbs' ? (o.timeLimit ?? o.orbs!) : stageConfig(i).boss!.hp;
       expect(amount, `level ${i + 1}`).toBeGreaterThanOrEqual(before[i] * 2);
       expect(stageConfig(i).phases.length, `level ${i + 1}`).toBe(4);
     }

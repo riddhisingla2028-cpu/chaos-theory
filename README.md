@@ -15,21 +15,22 @@ You steer a small shape around an arena while hazards close in. Every few second
 
 ### The 10 levels
 
-Every level runs through four phases (introduce the mechanic, raise the pressure, a harder variation, then a final mastery test), announced on screen as each begins.
+Every level has its own arena geometry (walls, floors that come and go, rotors) defined in `src/game/arenas.ts`, plus four escalating phases announced on screen.
 
-| # | Level | Objective | Phases |
-|---|---|---|---|
-| 1 | Beginner | Survive 15s | Learn to move → Hazards arrive → Crossfire → Final test (slip through a wall) |
-| 2 | Speed Rush | Survive 24s | Three speed waves → Final sprint |
-| 3 | Orb Hunt | Collect 10 orbs | Gather → Further out → Hunted (seekers, gold orbs) → Last orb under rain |
-| 4 | Reverse Control | Survive 24s | Normal → Reversed → Weavers (normal controls) → Flip storm |
-| 5 | The Vanishing Zone | Survive 28s | The floor vanishes in more and more tiles, always with a warning |
-| 6 | Double Chaos | Collect 12 orbs | One rule → Rules in pairs → Overload → Last orb |
-| 7 | Glitch Attack | Survive 28s | Swerves → Teleports (ghost warnings) → Signal storm → Blackout |
-| 8 | Shrinking Arena | Survive 30s | The walls close in step by step while hazards increase |
-| 9 | Chaos Combo | Collect 15 orbs in 50s | Mixed rules → Combos → Everything (vanishing floor too) → Finale |
-| 10 | Final Showdown | Defeat the Core (10 hits) | Awakening → Enraged (beams) → Shockwave → Desperation (twin beams); visible health bar, shielded phase changes |
+| # | Level | Arena | Objective | What makes it different |
+|---|---|---|---|---|
+| 1 | Beginner | **The Grid**: a clean training square | Survive 15s | Learn to move, then crossfire and a wall with one gap |
+| 2 | Speed Rush | **Collapse**: the outer tiles fall away one by one (2s warning each) | Survive 24s | Speed waves while the safe area shrinks to the centre |
+| 3 | Orb Hunt | **The Maze**: corridors and dead ends | Collect 10 orbs | Route through walls while seekers hunt you |
+| 4 | Reverse Control | **The Ring**: a circular arena with a two-arm rotor sweeping round a central pillar | Survive 24s | Flipped controls while dodging the rotor |
+| 5 | The Vanishing Zone | **Split Decision**: two platforms over a chasm, joined by timed drawbridges; each side floods in turn | Survive 28s | Cross before your side goes |
+| 6 | Double Chaos | **The Spiral**: a winding spiral corridor | Collect 12 orbs | Paired chaos rules in a space that forces you to keep moving |
+| 7 | Glitch Attack | **The Gauntlet**: a long, narrow corridor | Survive 28s | Teleporting, glitching hazards with nowhere wide to run |
+| 8 | Shrinking Arena | **Fracture**: an asymmetric shattered floor with sliding walls; whole sections fall away (3s warning) | Survive 30s | Retreat to the heart as the floor breaks |
+| 9 | Chaos Combo | **The Void**: islands joined by bridges that come and go | Collect 10 orbs in 50s | Each island has two routes on alternating rhythms; pick the one that holds |
+| 10 | Final Showdown | **The Core**: a circular boss arena that changes each phase (pillars, tighter ring, then a rotor) | Defeat the Core (10 hits) | Bursts, beams, shockwaves and twin beams; shielded phase changes |
 
+Falling off a floor edge or being swept by a rotor ends the run, with its own message on the results screen. Floors and rotors always show a warning (striped edges, a dashed rotor outline) before they change.
 ### Endless Modes
 
 | Mode | Objective | Personal bests |
@@ -89,6 +90,7 @@ React 18, TypeScript and Vite, with the game drawn on an HTML Canvas. There is n
 ```
 src/
   game/engine.ts      Pure, deterministic simulation: movement, hazards, chaos events, orbs, voids, boss, objectives
+  game/arenas.ts      Arena geometry: walls, timed floors, rotors, collision and fall checks
   game/stages.ts      The 10 levels, trials and daily challenge definitions
   game/render.ts      Canvas rendering for the arena and every mechanic
   game/autopilot.ts   AI pilot used for the live level previews and balance testing
@@ -114,7 +116,7 @@ npm run dev -- --host 0.0.0.0  # also reachable from a phone on the same Wi-Fi
 ## Test and build
 
 ```bash
-npm test           # 149 unit tests
+npm test           # 155 unit tests
 npm run build      # type-check + production build into dist/
 npm run preview    # serve the production build locally
 ```
@@ -126,6 +128,7 @@ The unit tests cover:
 - every chaos event, including paired events
 - orbs, time limits, vanishing tiles, shrinking walls, teleporting hazards and the boss's attacks and defeat
 - that every level and trial can be won (played by the autopilot)
+- arena geometry: safe spawns, always enough room to stand, a player who keeps moving can never be stranded, and every Void island always has a bridge
 - level phases, the boss's phases and attacks, all four Endless modes (including that each is genuinely playable)
 - audio unlocking, suspension recovery, mute and music (using a simulated AudioContext)
 - ad slot decisions, the entitlement service (a local flag can never grant ad-free status), frequency caps and the ad component

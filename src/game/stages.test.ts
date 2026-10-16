@@ -29,7 +29,7 @@ describe('level definitions', () => {
       'Collect 12 orbs',
       'Survive 28s',
       'Survive 30s',
-      'Collect 15 orbs in 50s',
+      'Collect 10 orbs in 50s',
       'Defeat the Core',
     ]);
   });
@@ -48,10 +48,10 @@ describe('level definitions', () => {
     expect(last(1).hazardSpeed).toBeGreaterThan(1.3);
     expect(stageConfig(2).objective?.type).toBe('orbs');
     expect(last(3).events.map((e) => e.kind)).toEqual(['INVERSION']);
-    expect(stageConfig(4).voids).toBe(true);
+    expect(stageConfig(4).arena.floor?.some((f) => f.cycle)).toBe(true); // drawbridges
     expect(last(5).pairs.length).toBeGreaterThan(0);
     expect(last(6).teleport).toBe(true);
-    expect(last(7).shrink).not.toBeNull();
+    expect(stageConfig(7).arena.floor?.some((f) => f.until !== undefined)).toBe(true); // breaking floor
     expect(last(8).pairChance).toBeGreaterThan(0);
     expect(stageConfig(9).boss).not.toBeNull();
     expect(last(9).bossTier).toBe(3);

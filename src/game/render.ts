@@ -19,6 +19,8 @@ import {
   type GameState,
 } from './engine';
 import type { Fx } from './fx';
+import { floorState, rotorAngle, rotorArmed, wallAt, type ArenaDef } from './arenas';
+import { arenaTime } from './engine';
 import { shapePoints } from './shapes';
 import type { Motif } from './stages';
 import type { ShapeId } from '../progress';
@@ -62,21 +64,33 @@ export function drawGame(
   const oy = shake ? (Math.random() - 0.5) * shake : 0;
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale, ox * dpr * scale, oy * dpr * scale);
 
-  ctx.fillStyle = look.arena;
-  ctx.fillRect(0, 0, ARENA, ARENA);
+  const arena = s.config.arena;
+  const at = arenaTime(s);
 
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, 0, ARENA, ARENA);
   ctx.clip();
+  // The void: anything that is not floor.
+  drawVoidBackdrop(ctx, t);
+  // The ground the player can stand on, with the level's pattern clipped to it.
+  ctx.save();
+  groundPath(ctx, arena, at);
+  ctx.fillStyle = look.arena;
+  ctx.fill();
+  ctx.clip();
   drawMotif(ctx, look.motif, t, px);
   drawHeat(ctx, look.heat);
+  ctx.restore();
+  drawFloorEdges(ctx, arena, at, t, px);
   drawVoids(ctx, s, t);
   drawGravity(ctx, s, t);
   drawCollapse(ctx, s, t, px);
   drawHorizon(ctx, s, t, px);
   drawTrail(ctx, s);
   drawSweeps(ctx, s, t, px);
+  drawWalls(ctx, arena, at, px);
+  drawRotors(ctx, arena, at, t);
   drawOrbs(ctx, s, t);
   drawBoss(ctx, s, t, px);
   drawHazards(ctx, s, t);
@@ -98,6 +112,139 @@ export function drawGame(
   ctx.strokeStyle = s.chaos?.phase === 'active' ? acc(0.75) : neon(0.45);
   ctx.strokeRect(px, px, ARENA - 2 * px, ARENA - 2 * px);
   ctx.restore();
+}
+
+// ---------- Arena geometry ----------
+
+/** Path of everything the player can currently stand on. */
+function groundPath(ctx: CanvasRenderingContext2D, a: ArenaDef, at: number): void {
+  ctx.beginPath();
+  const b = a.bounds;
+  if (a.floor) {
+    for (const f of a.floor) if (floorState(f, at) !== 'absent') ctx.rect(f.x, f.y, f.w, f.h);
+  } else if (a.circle) {
+    ctx.arc(a.circle.cx, a.circle.cy, a.circle.r, 0, Math.PI * 2);
+  } else {
+    ctx.rect(b.x, b.y, b.w, b.h);
+  }
+}
+
+function drawVoidBackdrop(ctx: CanvasRenderingContext2D, t: number): void {
+  ctx.fillStyle = '#030305';
+  ctx.fillRect(0, 0, ARENA, ARENA);
+  // Slow drifting specks give the void depth without competing with hazards.
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  ctx.fillStyle = 'rgba(243, 240, 234, 0.08)';
+  for (let i = 0; i < 70; i++) {
+    const x = (rand() * ARENA + t * (4 + rand() * 6)) % ARENA;
+    const y = rand() * ARENA;
+    const sz = 1 + rand() * 2.5;
+    ctx.fillRect(x, y, sz, sz);
+  }
+}
+
+function drawFloorEdges(ctx: CanvasRenderingContext2D, a: ArenaDef, at: number, t: number, px: number): void {
+  ctx.save();
+  ctx.lineWidth = 2 * px;
+  if (a.floor) {
+    for (const f of a.floor) {
+      const st = floorState(f, at);
+      if (st === 'absent') {
+        // A floor piece that will appear soon is outlined faintly.
+        if (f.from !== undefined && at < f.from && f.from - at < 2) {
+          ctx.setLineDash([10, 10]);
+          ctx.strokeStyle = neon(0.4);
+          ctx.strokeRect(f.x + 3, f.y + 3, f.w - 6, f.h - 6);
+          ctx.setLineDash([]);
+        }
+        continue;
+      }
+      if (st === 'warning') {
+        // About to fall: flashing hazard stripes (pattern + motion, not colour alone).
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(f.x, f.y, f.w, f.h);
+        ctx.clip();
+        ctx.strokeStyle = acc(0.35 + 0.3 * Math.sin(t * 20));
+        ctx.lineWidth = 14;
+        ctx.beginPath();
+        for (let k = -f.h; k < f.w + f.h; k += 46) {
+          ctx.moveTo(f.x + k, f.y);
+          ctx.lineTo(f.x + k + f.h, f.y + f.h);
+        }
+        ctx.stroke();
+        ctx.restore();
+        ctx.strokeStyle = acc(0.95);
+      } else {
+        ctx.strokeStyle = f.cycle ? neon(0.7) : neon(0.35);
+      }
+      ctx.lineWidth = (st === 'warning' ? 3 : 2) * px;
+      ctx.strokeRect(f.x + px, f.y + px, f.w - 2 * px, f.h - 2 * px);
+    }
+  } else if (a.circle) {
+    ctx.shadowColor = neon(0.8);
+    ctx.shadowBlur = 18;
+    ctx.strokeStyle = neon(0.6);
+    ctx.lineWidth = 3 * px;
+    ctx.beginPath();
+    ctx.arc(a.circle.cx, a.circle.cy, a.circle.r, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (a.bounds.w < ARENA || a.bounds.h < ARENA) {
+    ctx.shadowColor = neon(0.8);
+    ctx.shadowBlur = 18;
+    ctx.strokeStyle = neon(0.6);
+    ctx.lineWidth = 3 * px;
+    ctx.strokeRect(a.bounds.x, a.bounds.y, a.bounds.w, a.bounds.h);
+  }
+  ctx.restore();
+}
+
+function drawWalls(ctx: CanvasRenderingContext2D, a: ArenaDef, at: number, px: number): void {
+  for (const w of a.walls) {
+    if (w.move) {
+      // Faint track showing where a sliding wall travels.
+      ctx.fillStyle = neon(0.06);
+      ctx.fillRect(Math.min(w.x, w.x + w.move.dx), Math.min(w.y, w.y + w.move.dy), w.w + Math.abs(w.move.dx), w.h + Math.abs(w.move.dy));
+    }
+    const r = wallAt(w, at);
+    ctx.save();
+    ctx.fillStyle = 'rgba(30, 30, 40, 0.95)';
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.shadowColor = neon(0.8);
+    ctx.shadowBlur = 12;
+    ctx.strokeStyle = neon(w.move ? 0.95 : 0.7);
+    ctx.lineWidth = 2 * px;
+    ctx.strokeRect(r.x + px, r.y + px, r.w - 2 * px, r.h - 2 * px);
+    ctx.restore();
+  }
+}
+
+function drawRotors(ctx: CanvasRenderingContext2D, a: ArenaDef, at: number, t: number): void {
+  for (const rot of a.rotors) {
+    const armed = rotorArmed(rot, at);
+    for (let i = 0; i < rot.arms; i++) {
+      const ang = rotorAngle(rot, at, i);
+      ctx.save();
+      ctx.lineCap = 'round';
+      if (armed) {
+        ctx.shadowColor = acc(1);
+        ctx.shadowBlur = 18;
+        ctx.strokeStyle = acc(0.95);
+        ctx.lineWidth = rot.half * 2;
+      } else {
+        // Not dangerous yet: dashed and pulsing so the player learns its path first.
+        ctx.setLineDash([16, 12]);
+        ctx.strokeStyle = acc(0.3 + 0.3 * Math.sin(t * 12));
+        ctx.lineWidth = 4;
+      }
+      ctx.beginPath();
+      ctx.moveTo(rot.cx, rot.cy);
+      ctx.lineTo(rot.cx + Math.cos(ang) * rot.length, rot.cy + Math.sin(ang) * rot.length);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
 }
 
 // ---------- Background ----------

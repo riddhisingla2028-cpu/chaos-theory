@@ -1,4 +1,5 @@
 // Pure game simulation for Chaos Theory. No DOM access, so it can be unit tested.
+import { OPEN_ARENA, bounceHazard, onFloor, resolveBody, rotorHits, standable, type ArenaDef, type Rect } from './arenas';
 // The arena is a fixed 1000 x 1000 logical space; the renderer scales it to the screen.
 
 export const ARENA = 1000;
@@ -134,7 +135,9 @@ export type DeathCause =
   | 'timeout'
   | 'boss'
   | 'beam'
-  | 'nova';
+  | 'nova'
+  | 'fall'
+  | 'rotor';
 export type GameMode = 'stage' | 'endless' | 'daily' | 'trial' | 'orbrush' | 'chaos' | 'bossrush';
 
 /** Coordinated hazard formations that add variety on top of random spawns. */
@@ -346,6 +349,7 @@ export interface GameConfig {
   bossTier: number;
   bossRush: boolean; // endless chain of bosses instead of a single fight
   finishDelay: number;
+  arena: ArenaDef; // playable geometry; a phase can swap in a new one
 }
 
 // Endless introduces one rule at a time, easiest first.
@@ -404,6 +408,7 @@ export const ENDLESS_CONFIG: GameConfig = {
   bossTier: 0,
   bossRush: false,
   finishDelay: FINISH_DELAY,
+  arena: OPEN_ARENA,
 };
 
 export interface GameState {
@@ -413,6 +418,7 @@ export interface GameState {
   finishing: number; // > 0 while the completion celebration plays
   bossRespawn: number; // Boss Rush: countdown to the next boss
   shrinkNow: number; // current Shrinking Arena border
+  arenaStart: number; // game time the current arena geometry became active
   rng: () => number;
   time: number;
   status: 'playing' | 'over' | 'won';
@@ -488,10 +494,11 @@ export function createGame(seed: number = Date.now(), base: GameConfig = ENDLESS
     finishing: 0,
     bossRespawn: 0,
     shrinkNow: 0,
+    arenaStart: 0,
     rng: mulberry32(seed),
     time: 0,
     status: 'playing',
-    player: { x: ARENA / 2, y: config.boss ? ARENA * 0.8 : ARENA / 2, vx: 0, vy: 0 },
+    player: { x: config.arena.spawn.x, y: config.boss && config.arena === OPEN_ARENA ? ARENA * 0.8 : config.arena.spawn.y, vx: 0, vy: 0 },
     hazards: [],
     sweeps: [],
     trail: [],
@@ -500,7 +507,7 @@ export function createGame(seed: number = Date.now(), base: GameConfig = ENDLESS
     voids: [],
     voidTimer: 0.3, // counts down only once the warm-up is over
 
-    boss: config.boss ? newBoss(config.boss.hp, config.bossTier) : null,
+    boss: config.boss ? newBoss(config.boss.hp, config.bossTier, config.arena.circle?.cx ?? ARENA / 2, config.arena.circle?.cy ?? ARENA / 2) : null,
     trailClock: 0,
     spawnTimer: SPAWN_GRACE,
     patternTimer: config.patternFirst,
@@ -523,6 +530,15 @@ export function createGame(seed: number = Date.now(), base: GameConfig = ENDLESS
   return s;
 }
 
+// ---------- Arena ----------
+
+/** Seconds since the current arena geometry became active (drives moving walls, bridges, collapses). */
+export function arenaTime(s: GameState): number {
+  return s.time - s.arenaStart;
+}
+
+const bounds = (s: GameState): Rect => s.config.arena.bounds;
+
 // ---------- Phases ----------
 
 function phaseReached(s: GameState, p: Phase): boolean {
@@ -539,7 +555,9 @@ function updatePhases(s: GameState): void {
     s.phase++;
     const p = phases[s.phase];
     const hadChaos = s.config.events.length > 0 || s.config.pairs.length > 0;
+    const oldArena = s.config.arena;
     s.config = configForPhase(s.base, s.phase);
+    if (s.config.arena !== oldArena) s.arenaStart = s.time; // new geometry starts its own clock
     const hasChaos = s.config.events.length > 0 || s.config.pairs.length > 0;
     if (hasChaos && !hadChaos && !s.chaos) s.nextChaosIn = Math.min(s.nextChaosIn, 1.5);
     if (s.boss && s.boss.hp > 0) {
@@ -704,7 +722,10 @@ function updateChaos(s: GameState, dt: number): void {
 }
 
 function randomSpot(s: GameState, margin: number): Vec {
-  return { x: margin + s.rng() * (ARENA - 2 * margin), y: margin + s.rng() * (ARENA - 2 * margin) };
+  const b = bounds(s);
+  const mx = Math.min(margin, b.w / 2 - 1);
+  const my = Math.min(margin, b.h / 2 - 1);
+  return { x: b.x + mx + s.rng() * (b.w - 2 * mx), y: b.y + my + s.rng() * (b.h - 2 * my) };
 }
 
 function updateChaosEffects(s: GameState): void {
@@ -729,8 +750,9 @@ function updateChaosEffects(s: GameState): void {
           // first and the hazard is intangible mid-jump, so it is threatening but never a cheap hit.
           const a = s.rng() * Math.PI * 2;
           const d = 230 + s.rng() * 100;
-          const x = clamp(s.player.x + Math.cos(a) * d, 40, ARENA - 40);
-          const y = clamp(s.player.y + Math.sin(a) * d, 40, ARENA - 40);
+          const b = bounds(s);
+          const x = clamp(s.player.x + Math.cos(a) * d, b.x + 30, b.x + b.w - 30);
+          const y = clamp(s.player.y + Math.sin(a) * d, b.y + 30, b.y + b.h - 30);
           h.blink = { x, y, t: TELEPORT_TELL };
           continue;
         }
@@ -791,8 +813,9 @@ function updatePlayer(s: GameState, input: Vec, dt: number): void {
     mx += s.chaos!.gravity.x * GRAVITY_STRENGTH;
     my += s.chaos!.gravity.y * GRAVITY_STRENGTH;
   }
-  p.x = clamp(p.x + mx * dt, PLAYER_HALF, ARENA - PLAYER_HALF);
-  p.y = clamp(p.y + my * dt, PLAYER_HALF, ARENA - PLAYER_HALF);
+  p.x += mx * dt;
+  p.y += my * dt;
+  resolveBody(s.config.arena, arenaTime(s), p, PLAYER_HALF);
 }
 
 function updateTrail(s: GameState, dt: number): void {
@@ -856,6 +879,8 @@ export function inVoid(v: VoidTile, x: number, y: number, margin: number): boole
 
 /** Whether a point is somewhere the player can safely stand right now (and will soon). */
 function isSafeSpot(s: GameState, x: number, y: number, pad: number): boolean {
+  // Orbs only go where the player can stand now and for the next three seconds.
+  if (!standable(s.config.arena, arenaTime(s), x, y, Math.max(pad, PLAYER_HALF + 6), 3)) return false;
   const lo = Math.max(s.inset, shrinkInset(s) + (s.config.shrink ? s.config.shrink.rate * 2 : 0)) + pad;
   if (x < lo || x > ARENA - lo || y < lo || y > ARENA - lo) return false;
   if (s.voids.some((v) => inVoid(v, x, y, -pad))) return false;
@@ -1059,15 +1084,24 @@ function addDrifter(s: GameState, x: number, y: number, vx: number, vy: number, 
 
 /** A drifter entering from `side` (0 top, 1 right, 2 bottom, 3 left) at `along`, moving straight in. */
 function addInward(s: GameState, side: number, along: number, speed: number, r: number): void {
-  if (side === 0) addDrifter(s, along, -r, 0, speed, r);
-  else if (side === 1) addDrifter(s, ARENA + r, along, -speed, 0, r);
-  else if (side === 2) addDrifter(s, along, ARENA + r, 0, -speed, r);
-  else addDrifter(s, -r, along, speed, 0, r);
+  // `along` is 0..ARENA across the edge; map it onto this arena's bounds.
+  const b = bounds(s);
+  const ax = b.x + (along / ARENA) * b.w;
+  const ay = b.y + (along / ARENA) * b.h;
+  if (side === 0) addDrifter(s, ax, b.y - r, 0, speed, r);
+  else if (side === 1) addDrifter(s, b.x + b.w + r, ay, -speed, 0, r);
+  else if (side === 2) addDrifter(s, ax, b.y + b.h + r, 0, -speed, r);
+  else addDrifter(s, b.x - r, ay, speed, 0, r);
+}
+
+function pickSide(s: GameState): number {
+  const sides = s.config.arena.spawnSides ?? [0, 1, 2, 3];
+  return sides[Math.floor(s.rng() * sides.length)];
 }
 
 export function spawnPattern(s: GameState, kind: PatternKind): void {
   const pace = paceOf(s);
-  const side = Math.floor(s.rng() * 4);
+  const side = pickSide(s);
   if (kind === 'wall') {
     // A slow line of hazards with a two-slot gap to slip through.
     const slots = 8;
@@ -1082,11 +1116,13 @@ export function spawnPattern(s: GameState, kind: PatternKind): void {
   } else {
     // Pincer: one hazard from each edge, all aimed where the player is now. Move to dodge.
     const p = s.player;
-    for (let edge = 0; edge < 4; edge++) {
+    const b = bounds(s);
+    for (const edge of s.config.arena.spawnSides ?? [0, 1, 2, 3]) {
       const along = (edge % 2 === 0 ? p.x : p.y) + (s.rng() - 0.5) * 160;
-      const clamped = clamp(along, 40, ARENA - 40);
+      const cx = clamp(along, b.x + 20, b.x + b.w - 20);
+      const cy = clamp(along, b.y + 20, b.y + b.h - 20);
       const [x, y] =
-        edge === 0 ? [clamped, -12] : edge === 1 ? [ARENA + 12, clamped] : edge === 2 ? [clamped, ARENA + 12] : [-12, clamped];
+        edge === 0 ? [cx, b.y - 12] : edge === 1 ? [b.x + b.w + 12, cy] : edge === 2 ? [cx, b.y + b.h + 12] : [b.x - 12, cy];
       const a = Math.atan2(p.y - y, p.x - x);
       addDrifter(s, x, y, Math.cos(a) * 170 * pace, Math.sin(a) * 170 * pace, 12);
     }
@@ -1130,18 +1166,20 @@ function updateMilestones(s: GameState): void {
 function spawnHazard(s: GameState): void {
   const seeker = s.rng() < seekerChance(s);
   const r = seeker ? 13 : 9 + s.rng() * 13;
-  const side = Math.floor(s.rng() * 4);
-  const along = s.rng() * ARENA;
+  const side = pickSide(s);
+  const b = bounds(s);
+  const ax = b.x + s.rng() * b.w;
+  const ay = b.y + s.rng() * b.h;
   let x: number;
   let y: number;
-  if (side === 0) [x, y] = [along, -r];
-  else if (side === 1) [x, y] = [ARENA + r, along];
-  else if (side === 2) [x, y] = [along, ARENA + r];
-  else [x, y] = [-r, along];
+  if (side === 0) [x, y] = [ax, b.y - r];
+  else if (side === 1) [x, y] = [b.x + b.w + r, ay];
+  else if (side === 2) [x, y] = [ax, b.y + b.h + r];
+  else [x, y] = [b.x - r, ay];
 
   // Aim at a random point in the middle of the arena so hazards always cross it.
-  const tx = ARENA * (0.2 + s.rng() * 0.6);
-  const ty = ARENA * (0.2 + s.rng() * 0.6);
+  const tx = b.x + b.w * (0.2 + s.rng() * 0.6);
+  const ty = b.y + b.h * (0.2 + s.rng() * 0.6);
   const speed = (seeker ? 120 : 170 + s.rng() * 90) * paceOf(s);
   const angle = Math.atan2(ty - y, tx - x);
   s.hazards.push({
@@ -1222,8 +1260,10 @@ function updateHazards(s: GameState, dt: number): void {
       h.x += (-h.vy / sp) * side;
       h.y += (h.vx / sp) * side;
     }
+    if (!h.blink) bounceHazard(s.config.arena, arenaTime(s), h);
+    const bb = bounds(s);
     const inBounds =
-      h.x > -OFFSCREEN_MARGIN && h.x < ARENA + OFFSCREEN_MARGIN && h.y > -OFFSCREEN_MARGIN && h.y < ARENA + OFFSCREEN_MARGIN;
+      h.x > bb.x - OFFSCREEN_MARGIN && h.x < bb.x + bb.w + OFFSCREEN_MARGIN && h.y > bb.y - OFFSCREEN_MARGIN && h.y < bb.y + bb.h + OFFSCREEN_MARGIN;
     if (inBounds && h.age < h.life) kept.push(h);
     else s.stats.hazardsDodged++;
   }
@@ -1312,6 +1352,11 @@ function checkCollisions(s: GameState): void {
   }
 
   for (const v of s.voids) if (v.phase === 'active' && inVoid(v, p.x, p.y, VOID_MARGIN)) return die(s, 'void');
+
+  const arena = s.config.arena;
+  const at = arenaTime(s);
+  if (!onFloor(arena, at, p.x, p.y)) return die(s, 'fall');
+  for (const rot of arena.rotors) if (rotorHits(rot, at, p.x, p.y, PLAYER_HIT_RADIUS)) return die(s, 'rotor');
 
   const b = s.boss;
   if (b && b.hp > 0) {

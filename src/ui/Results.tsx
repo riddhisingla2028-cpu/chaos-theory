@@ -47,6 +47,8 @@ const CAUSE_TEXT: Record<DeathCause, string> = {
   boss: 'Touched the Core',
   beam: 'Burned by the Core’s beam',
   nova: 'Caught by the shockwave',
+  fall: 'Fell into the void',
+  rotor: 'Swept by a rotor arm',
 };
 
 const BEST_LABEL: Record<keyof ModeBest, string> = { score: 'score', time: 'time', orbs: 'orb count', events: 'event count', bosses: 'boss streak' };
