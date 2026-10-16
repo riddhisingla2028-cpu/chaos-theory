@@ -2,7 +2,7 @@
 
 A neon arcade survival game for the browser where the rules keep breaking.
 
-You steer a small shape around an arena while hazards close in. Every few seconds a **chaos event** rewrites the rules: your controls flip, the walls close in, gravity drags you sideways. Survive, collect orbs, and work through ten levels to a final boss fight. It plays on desktop and phone, with no install and no account.
+You steer a small shape through ten different arenas while hazards close in. Every few seconds a **chaos event** rewrites the rules: your controls flip, the floor falls away, gravity drags you sideways. Survive, collect orbs, and fight your way to a boss whose arena changes as it breaks. Play solo or with up to five friends in private multiplayer rooms. It runs in the browser on desktop and phone, with no install, and no account needed to start.
 
 ## Game modes
 
@@ -11,6 +11,7 @@ You steer a small shape around an arena while hazards close in. Every few second
 | **Levels** | A 10-level campaign. Each level has four escalating phases, its own objective, mechanic, colour and difficulty, and clearing one unlocks the next. |
 | **Endless Modes** | Four always-unlocked modes: **Classic Survival**, **Orb Rush**, **Chaos Survival** and **Boss Rush**, each with its own personal bests. |
 | **Daily** | One seeded run per day with a daily twist (for example *Overclock* or *Swarm*), the same for every player. |
+| **Multiplayer** | Private rooms for 2–6 players with a room code or invite link: **Co-op Survival**, **Last Player Standing** and **Orb Race**. |
 | **Trials** | Two bonus challenges (*Orb Frenzy*, *Hard Core*), available through the free Chaos+ cosmetics preview. |
 
 ### The 10 levels
@@ -48,29 +49,53 @@ Inversion, Collapse, Afterimage, Gravity Shift, Surge, Scanline, Phantom, Event 
 
 ## Features
 
-- **Fair, gradual difficulty:** every run starts with a slow warm-up, difficulty ramps in smoothly, and Endless introduces one rule at a time.
-- **Scoring:** points for survival time, near-miss combos up to ×5, orb bonuses and milestone rewards.
-- **Instant retry:** a large one-tap Retry button, plus a comparison with your last attempt and how close you came to the objective.
-- **Progression:** stars, 19 achievements, unlockable player skins and colour themes, a records screen with lifetime stats and a top-10 for each mode, and per-mode personal bests that never go down.
-- **Polish:** an animated neon lobby, phase announcements, a boss health bar, particles, screen shake, a completion celebration, and sound effects and menu music generated in code with the Web Audio API (no audio files).
-- **Mobile sound:** audio starts on the first tap (as iOS and Android require), recovers after the app is backgrounded, and shows a "Tap to enable sound" control if the browser is still blocking it. The mute preference is saved.
-- **Mobile:** a phone-first layout that also adapts to landscape, a floating or fixed touch joystick (configurable), and protection against scrolling, zooming and accidental refresh during play.
-- **Accessibility:** keyboard play throughout, visible focus states, and reduced motion when the device asks for it.
-- **Saved locally:** all progress and settings are stored in the browser (`localStorage`), and the game still works if storage is blocked.
+- **Ten arenas, ten identities:** each level has its own geometry, colour, mechanic and four escalating phases (see the table above). Floors warn before they fall, rotors show a dashed outline before they arm, and every phase is announced.
+- **Balanced by simulation:** an autopilot plays hundreds of runs per level at two skill profiles; later levels clear far less often than early ones, and arena tests prove a moving player can never be stranded by the geometry.
+- **Progression:** XP from every run, account levels (up to 50), three daily and three weekly challenges, 19 achievements, stars, per-level records (best score, fastest clear, attempts, deaths), match history, and a rewards panel on every results screen that itemises the XP earned.
+- **Cosmetics, all earned by playing:** skins and colour themes, plus trails (Classic, Comet, Beads, Prism) and victory effects (Confetti, Shockwave, Fireworks, Starfall) unlocked by account level. None of them changes gameplay.
+- **Profile:** account level and XP, challenges, campaign records and the last 25 matches.
+- **Social:** a local leaderboard (top 10 per mode plus "This week"), clearly labelled as this device only, and a **Share score** button that makes a score-card image (system share sheet on phones, saved as a PNG elsewhere).
+- **Polish:** an animated neon launcher, phase announcements, a boss health bar, particles, screen shake, celebrations, and sound and music generated in code with the Web Audio API.
+- **Audio:** separate sound-effect and music volumes plus a master mute. Audio starts on the first tap (as iOS and Android require), recovers when the tab returns, never runs two music loops, and volume is capped so it can never jump above the default level.
+- **Accessibility:** full keyboard play, visible focus states, a reduced-motion setting (follows the device by default), a high-contrast setting, 44px touch targets, and warnings that use shape and pattern as well as colour.
+- **Mobile:** a phone-first layout that adapts to landscape, floating or fixed touch joystick, and protection against scrolling, zooming and accidental refresh during play.
+- **Saving:** progress is saved in the browser for guests, with safe migration of older saves. Optional accounts sync it to the cloud (see below).
 
-### Chaos+ Ad-Free (coming soon)
+## Accounts and cloud saves (optional, needs Supabase)
 
-Chaos+ Ad-Free is a planned optional upgrade that removes ads and adds cosmetics, with no gameplay advantage. **Purchasing is not available yet:** the button shows "Coming soon", and no payment can be made. A free, clearly labelled *cosmetics preview* lets players try the premium skins, themes and trials; it is not a purchase and does not remove ads. Players stuck on a level for three attempts can skip it for free (a skipped level gives no stars).
+Players can always play as guests; nobody has to sign up first. When the build is configured with a Supabase project, the Profile screen offers **sign up with email, email verification, sign in, sign out and password reset**, and progress (levels, stars, records, achievements, XP, challenges, history) syncs across devices.
+
+- **Guest to account:** on first sign-in, the guest progress on that device is merged into the account. Nothing is overwritten: every record keeps the better of the two values, and repeating a sync changes nothing, so an older device can never erase newer progress.
+- **Security:** only the public anon key is used in the browser. Row-level security lets each player read and write only their own save, and a database trigger validates saves (shape, size, value ranges) and strips anything purchase-related. Settings stay per device.
+- **Not configured (the current state):** the Profile screen says that accounts and cloud saves are not set up yet and shows no sign-in buttons. The Supabase library is not even downloaded.
+
+**To enable:** create a free Supabase project, run `supabase/schema.sql` in its SQL editor, set *Authentication → URL configuration* to your site URL, then build with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (see `.env.example`). Never put the service-role key in the frontend. The account flow is unit-tested and browser-tested against a simulated Supabase; it has not yet been tested against a real Supabase project.
+
+## Multiplayer
+
+Real-time, private rooms over WebRTC. One player creates a room and gets a 5-character code and an invite link (`?room=CODE`); friends join with either. Players have names and their chosen shape as an avatar, ready up in a lobby, and the host chooses the mode and starts the match. Live scores show during play; results, rematches and mode changes follow.
+
+| Mode | Rules |
+|---|---|
+| Co-op Survival | Survive two minutes together in The Grid. Downed players return after 5s while anyone is still standing. |
+| Last Player Standing | One hit and you are out, in The Ring with its sweeping rotor. Last one standing wins. |
+| Orb Race | Most orbs in 60 seconds in The Maze wins. A hit costs an orb and a moment. |
+
+**Boss Co-op is not available yet.**
+
+**How it works:** the host's browser runs the only simulation. Other players send just their stick input (clamped and rate-limited by the host) and receive state snapshots 20 times a second, which they smooth for display. No client can set positions, scores or results. Connections are peer-to-peer (WebRTC via PeerJS); the free public PeerJS service only introduces the browsers to each other, so no server, key or account is needed. Dropped players reconnect into the same seat, players who leave free their place, and if the host leaves, everyone is told the room has closed.
+
+**Limits:** the host's game is trusted, so this suits private games between friends, not ranked or public matchmaking. That would need a dedicated authoritative game server (for example a small Node WebSocket service), which also removes the peer-to-peer address sharing. Some strict corporate or mobile networks block peer-to-peer connections; a TURN relay service would be needed to reach those players. Multiplayer does not award XP.
+
+### Chaos+ (coming soon)
+
+Chaos+ is a planned optional, one-time upgrade with no gameplay advantage: it removes ads and adds the Chaos+ collection (two skins, two themes, two bonus trials). **Purchasing is not available yet:** the button shows "Coming soon", no price is shown, and no payment can be made. Only a server-verified purchase (`PURCHASE_VERIFIER` in `src/monetization/entitlements.ts`) can ever switch ads off; nothing stored in the browser can. Until purchases open, anyone can try the Chaos+ collection in a clearly labelled free preview, which does not remove ads. Everything else (all levels, Endless, multiplayer, challenges, XP, trails and victory effects) stays free. Players stuck on a level for three attempts can skip it for free (no stars).
 
 ### Advertising (disabled)
 
-The game has reserved, provider-agnostic ad slots on the home screen, level select and every results screen. There are never ads during gameplay or over the arena. **Ads are disabled:** no ad network, no third-party scripts and no tracking are included. Production builds render no ad slots at all; development builds show clearly marked placeholders.
+Reserved, provider-agnostic ad slots exist in five places: the **lobby** (below the modes), **campaign level select**, **level results**, **Endless results** and the **profile page**. Ads never appear during gameplay, over the arena or over controls. **Ads are disabled:** there is no ad network, no third-party script and no tracking. Production builds render no slot at all, so there are no empty gaps; development builds show a subtle placeholder labelled "Advertisement" with the intended size (320×50 on phones; 468×60 or 728×90 on desktop).
 
-To enable ads in future, after choosing and approving a provider:
-1. Implement the `AdProvider` interface in `src/monetization/ads.ts` and set `AD_PROVIDER`.
-2. Build with `VITE_ADS_ENABLED=true`.
-
-Ad-free status comes only from `src/monetization/entitlements.ts`, which trusts nothing but a server-verified purchase (`PURCHASE_VERIFIER`, not yet configured). Between-run ads are frequency-capped, and rewarded ads stay off until a real provider exists.
+To enable ads later, after choosing and approving a provider: implement the `AdProvider` interface in `src/monetization/ads.ts`, set `AD_PROVIDER`, and build with `VITE_ADS_ENABLED=true`. Between-run ads are frequency-capped, and rewarded ads stay off until a real provider exists.
 
 ## Controls
 
@@ -85,7 +110,7 @@ Ad-free status comes only from `src/monetization/entitlements.ts`, which trusts 
 
 ## Tech stack
 
-React 18, TypeScript and Vite, with the game drawn on an HTML Canvas. There is no backend, no accounts, no paid APIs, and no environment variables or secrets. The only external resource is the Google Fonts stylesheet (Unbounded and Inter), with system-font fallbacks.
+React 18, TypeScript and Vite, with the game drawn on an HTML Canvas. No environment variables are required, and none are secret. External resources: the Google Fonts stylesheet (with system-font fallbacks); the public PeerJS broker, only once someone opens Multiplayer; and Supabase, only if it is configured.
 
 ```
 src/
@@ -98,6 +123,9 @@ src/
   game/audio.ts       Synthesised sound effects and ambient music
   game/input.ts       Keyboard and touch-joystick input
   progress.ts         Stars, achievements, unlocks, records, per-mode bests, settings and versioned saving
+  progression.ts      XP, account levels, daily and weekly challenges, match history, trails and victory effects
+  cloud/              Supabase accounts and cloud sync (off unless configured) and the save merge
+  net/                Multiplayer: match simulation, rooms and protocol, PeerJS transport
   monetization/       Ad slots, frequency caps and the entitlement service (ads disabled, no provider)
   ui/                 Lobby, level map, previews, results, collection, settings
   App.tsx             Screen flow, HUD, game loop, touch controls
@@ -116,7 +144,7 @@ npm run dev -- --host 0.0.0.0  # also reachable from a phone on the same Wi-Fi
 ## Test and build
 
 ```bash
-npm test           # 155 unit tests
+npm test           # 195 unit tests
 npm run build      # type-check + production build into dist/
 npm run preview    # serve the production build locally
 ```
@@ -130,8 +158,13 @@ The unit tests cover:
 - that every level and trial can be won (played by the autopilot)
 - arena geometry: safe spawns, always enough room to stand, a player who keeps moving can never be stranded, and every Void island always has a bridge
 - level phases, the boss's phases and attacks, all four Endless modes (including that each is genuinely playable)
-- audio unlocking, suspension recovery, mute and music (using a simulated AudioContext)
+- audio unlocking, suspension recovery, mute, music, and separate sound and music volumes (using a simulated AudioContext)
+- XP, account levels, daily and weekly challenges (rotation, accumulation, completed once), match history and level-gated cosmetics
+- save merging for cloud sync (keeps the best of both, safe to repeat, never takes settings or purchase flags from the cloud), and the account flows against a simulated Supabase
+- multiplayer: the match simulation (deterministic, input clamping, each mode's win rules, disconnects), room codes and name cleaning, and the room protocol over an in-memory network (lobby, ready, start, live snapshots, results, rematch, reconnect into the same seat, host leaving, full rooms, a client unable to move others or fake results)
 - ad slot decisions, the entitlement service (a local flag can never grant ad-free status), frequency caps and the ad component
 - star thresholds, skips, records, per-mode bests, saved-data migration, and keyboard and touch input
 
 Level difficulty was balanced by simulating hundreds of runs per level with the autopilot set to beginner and attentive skill levels.
+
+Multiplayer was also tested end to end with two separate Chrome browsers (one desktop-sized, one phone-sized with touch input) connected through the real PeerJS service over WebRTC: creating a room, joining by invite link, ready-up, start, movement, shared hazards, live scores, a dropped connection reconnecting, results, rematch, a mode change and the host leaving.
