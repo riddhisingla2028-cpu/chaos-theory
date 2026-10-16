@@ -70,7 +70,6 @@ export const VOID_GRID = 4;
 export const VOID_TILE = ARENA / VOID_GRID;
 export const VOID_WARN = 1.0;
 const VOID_ON = 1.7;
-const VOID_CYCLE = 2.3;
 export const VOID_MARGIN = 14; // the player must be clearly inside a void to fall in
 
 // Final Showdown boss.
@@ -79,6 +78,15 @@ export const BOSS_TELL = 0.8;
 export const BEAM_HALF = 10;
 const BEAM_SPEED = 1.1; // radians per second
 const BEAM_TIME = 3;
+export const NOVA_SPEED = 280; // expanding shockwave ring
+export const NOVA_HALF = 12; // half thickness of the ring
+export const NOVA_GAP = 0.55; // half-width (radians) of the safe gap in the ring
+const BOSS_SHIELD = 1.6; // seconds the Core is shielded (no attacks) after a phase change
+const BOSS_RESPAWN = 2.6; // Boss Rush: breather between bosses
+
+export const BONUS_ORB_POINTS = 150;
+const BONUS_ORB_LIFE = 5;
+export const FINISH_DELAY = 1.3; // celebration between completing an objective and the victory screen
 
 export type ChaosKind =
   | 'INVERSION'
@@ -125,8 +133,9 @@ export type DeathCause =
   | 'void'
   | 'timeout'
   | 'boss'
-  | 'beam';
-export type GameMode = 'stage' | 'endless' | 'daily' | 'trial';
+  | 'beam'
+  | 'nova';
+export type GameMode = 'stage' | 'endless' | 'daily' | 'trial' | 'orbrush' | 'chaos' | 'bossrush';
 
 /** Coordinated hazard formations that add variety on top of random spawns. */
 export type PatternKind = 'wall' | 'pincer' | 'rain';
@@ -148,6 +157,7 @@ export interface Hazard {
   life: number;
   grazed: boolean;
   blink?: { x: number; y: number; t: number }; // pending teleport
+  weave?: number; // amplitude of a side-to-side wave (weaver hazards)
 }
 
 export interface TrailPoint {
@@ -195,6 +205,7 @@ export interface Orb {
   x: number;
   y: number;
   age: number;
+  bonus: boolean; // worth more, but vanishes after a few seconds
 }
 
 export interface VoidTile {
@@ -204,14 +215,15 @@ export interface VoidTile {
   timer: number;
 }
 
-export type BossAttackKind = 'burst' | 'beam' | 'summon';
+export type BossAttackKind = 'burst' | 'beam' | 'summon' | 'nova' | 'twin';
 
 export interface BossAttack {
   kind: BossAttackKind;
   phase: 'tell' | 'fire';
   timer: number;
-  angle: number; // gap direction (burst) or beam direction
+  angle: number; // gap direction (burst, nova) or beam direction (beam, twin)
   spin: 1 | -1;
+  radius: number; // nova: current ring radius
 }
 
 export interface Boss {
@@ -224,6 +236,8 @@ export interface Boss {
   cooldown: number;
   hitFlash: number;
   last: BossAttackKind | null;
+  tier: number; // 0..4: unlocks attacks and speeds everything up
+  shield: number; // seconds of phase-transition shield left
 }
 
 export interface GameStats {
@@ -234,6 +248,8 @@ export interface GameStats {
   peakMultiplier: number;
   chaosSurvived: ChaosKind[];
   orbs: number;
+  bonusOrbs: number;
+  bosses: number; // bosses defeated this run
 }
 
 export type GameEvent =
@@ -249,7 +265,10 @@ export type GameEvent =
   | { type: 'warmupEnd' }
   | { type: 'milestone'; seconds: number; bonus: number }
   | { type: 'pattern'; kind: PatternKind }
-  | { type: 'orb'; x: number; y: number; collected: number; target: number | null }
+  | { type: 'orb'; x: number; y: number; collected: number; target: number | null; bonus: boolean }
+  | { type: 'phase'; index: number; count: number; name: string; hint: string }
+  | { type: 'objectiveComplete' }
+  | { type: 'bossSpawn'; tier: number; x: number; y: number }
   | { type: 'voidWarn' }
   | { type: 'bossTell'; kind: BossAttackKind }
   | { type: 'bossHit'; hp: number; x: number; y: number }
@@ -264,6 +283,18 @@ export interface EventSlot {
 export interface PatternSlot {
   kind: PatternKind;
   from: number;
+}
+
+/**
+ * A phase of a level. Phases run in order; each starts when its trigger is met and layers its
+ * settings on top of all earlier phases, so a level escalates step by step.
+ */
+export interface Phase {
+  name: string;
+  hint: string;
+  at: { time?: number; orbs?: number; bossHp?: number }; // trigger (phase 0 starts immediately)
+  set: Partial<GameConfig>;
+  burst?: PatternKind; // a formation fired the moment the phase begins
 }
 
 /** How a run is won. Endless and Daily have no objective. */
@@ -305,6 +336,16 @@ export interface GameConfig {
   boss: { hp: number } | null;
   orbField: boolean; // orbs spawn even without an orb objective (for score)
   orbCount: number; // orbs on the field at once
+  orbMinDistance: number; // new orbs appear at least this far from the player
+  bonusOrbChance: number;
+  phases: Phase[];
+  voidCount: number; // tiles that vanish per cycle
+  voidCycle: number; // seconds between vanishing cycles
+  voidWarn: number; // telegraph before a tile vanishes (kept >= 0.8 for fairness)
+  weaveChance: number; // chance a hazard is a side-to-side weaver
+  bossTier: number;
+  bossRush: boolean; // endless chain of bosses instead of a single fight
+  finishDelay: number;
 }
 
 // Endless introduces one rule at a time, easiest first.
@@ -353,10 +394,25 @@ export const ENDLESS_CONFIG: GameConfig = {
   boss: null,
   orbField: false,
   orbCount: 1,
+  orbMinDistance: 220,
+  bonusOrbChance: 0,
+  phases: [],
+  voidCount: 3,
+  voidCycle: 2.3,
+  voidWarn: 1,
+  weaveChance: 0,
+  bossTier: 0,
+  bossRush: false,
+  finishDelay: FINISH_DELAY,
 };
 
 export interface GameState {
-  config: GameConfig;
+  config: GameConfig; // live settings: the base config plus every phase reached so far
+  base: GameConfig;
+  phase: number;
+  finishing: number; // > 0 while the completion celebration plays
+  bossRespawn: number; // Boss Rush: countdown to the next boss
+  shrinkNow: number; // current Shrinking Arena border
   rng: () => number;
   time: number;
   status: 'playing' | 'over' | 'won';
@@ -410,11 +466,28 @@ export function difficulty(time: number) {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-export const usesOrbs = (cfg: GameConfig) => cfg.orbField || cfg.objective?.type === 'orbs' || cfg.objective?.type === 'boss';
+export const usesOrbs = (cfg: GameConfig) => cfg.orbField || cfg.boss !== null || cfg.objective?.type === 'orbs' || cfg.objective?.type === 'boss';
 
-export function createGame(seed: number = Date.now(), config: GameConfig = ENDLESS_CONFIG): GameState {
+function newBoss(hp: number, tier: number, x = ARENA / 2, y = ARENA / 2): Boss {
+  return { x, y, r: BOSS_RADIUS, hp, maxHp: hp, attack: null, cooldown: 0.6, hitFlash: 0, last: null, tier, shield: 0 };
+}
+
+/** Settings for a given phase: the base config with every phase's changes up to it applied in order. */
+export function configForPhase(base: GameConfig, index: number): GameConfig {
+  let c: GameConfig = base;
+  for (let i = 0; i <= index && i < base.phases.length; i++) c = { ...c, ...base.phases[i].set };
+  return c;
+}
+
+export function createGame(seed: number = Date.now(), base: GameConfig = ENDLESS_CONFIG): GameState {
+  const config = configForPhase(base, 0);
   const s: GameState = {
     config,
+    base,
+    phase: 0,
+    finishing: 0,
+    bossRespawn: 0,
+    shrinkNow: 0,
     rng: mulberry32(seed),
     time: 0,
     status: 'playing',
@@ -427,9 +500,7 @@ export function createGame(seed: number = Date.now(), config: GameConfig = ENDLE
     voids: [],
     voidTimer: 0.3, // counts down only once the warm-up is over
 
-    boss: config.boss
-      ? { x: ARENA / 2, y: ARENA / 2, r: BOSS_RADIUS, hp: config.boss.hp, maxHp: config.boss.hp, attack: null, cooldown: 0.6, hitFlash: 0, last: null }
-      : null,
+    boss: config.boss ? newBoss(config.boss.hp, config.bossTier) : null,
     trailClock: 0,
     spawnTimer: SPAWN_GRACE,
     patternTimer: config.patternFirst,
@@ -444,12 +515,45 @@ export function createGame(seed: number = Date.now(), config: GameConfig = ENDLE
     score: 0,
     combo: 0,
     comboTimer: 0,
-    stats: { eventsSurvived: 0, hazardsDodged: 0, peakLevel: 1, nearMisses: 0, peakMultiplier: 1, chaosSurvived: [], orbs: 0 },
+    stats: { eventsSurvived: 0, hazardsDodged: 0, peakLevel: 1, nearMisses: 0, peakMultiplier: 1, chaosSurvived: [], orbs: 0, bonusOrbs: 0, bosses: 0 },
     cause: null,
     events: [],
     nextId: 1,
   };
   return s;
+}
+
+// ---------- Phases ----------
+
+function phaseReached(s: GameState, p: Phase): boolean {
+  const at = p.at;
+  if (at.time !== undefined && s.time < at.time) return false;
+  if (at.orbs !== undefined && s.stats.orbs < at.orbs) return false;
+  if (at.bossHp !== undefined && (!s.boss || s.boss.hp > at.bossHp)) return false;
+  return true;
+}
+
+function updatePhases(s: GameState): void {
+  const phases = s.base.phases;
+  while (s.phase + 1 < phases.length && phaseReached(s, phases[s.phase + 1])) {
+    s.phase++;
+    const p = phases[s.phase];
+    const hadChaos = s.config.events.length > 0 || s.config.pairs.length > 0;
+    s.config = configForPhase(s.base, s.phase);
+    const hasChaos = s.config.events.length > 0 || s.config.pairs.length > 0;
+    if (hasChaos && !hadChaos && !s.chaos) s.nextChaosIn = Math.min(s.nextChaosIn, 1.5);
+    if (s.boss && s.boss.hp > 0) {
+      // A new boss phase: brief shield, clear the board, then a harder pattern set.
+      s.boss.tier = Math.max(s.boss.tier, s.config.bossTier);
+      s.boss.attack = null;
+      s.boss.shield = BOSS_SHIELD;
+      s.boss.cooldown = BOSS_SHIELD;
+      s.stats.hazardsDodged += s.hazards.length;
+      s.hazards = [];
+    }
+    if (p.burst) spawnPattern(s, p.burst);
+    s.events.push({ type: 'phase', index: s.phase, count: phases.length, name: p.name, hint: p.hint });
+  }
 }
 
 /** 0 during the warm-up, rising smoothly to 1 over the ramp. */
@@ -620,11 +724,11 @@ function updateChaosEffects(s: GameState): void {
       c.ticks++;
       for (const h of s.hazards) {
         if (h.kind !== 'drifter' || h.blink) continue;
-        if (s.config.teleport && s.rng() < 0.4) {
-          // Teleport to a ring around the player and re-aim at them. A ghost marks the spot first,
-          // and the hazard is intangible mid-jump, so it is threatening but never a cheap hit.
+        if (s.config.teleport && s.rng() < 0.25) {
+          // Teleport to a ring around the player and roughly re-aim at them. A ghost marks the spot
+          // first and the hazard is intangible mid-jump, so it is threatening but never a cheap hit.
           const a = s.rng() * Math.PI * 2;
-          const d = 170 + s.rng() * 90;
+          const d = 230 + s.rng() * 100;
           const x = clamp(s.player.x + Math.cos(a) * d, 40, ARENA - 40);
           const y = clamp(s.player.y + Math.sin(a) * d, 40, ARENA - 40);
           h.blink = { x, y, t: TELEPORT_TELL };
@@ -702,11 +806,12 @@ function updateTrail(s: GameState, dt: number): void {
 
 /** The steadily growing border of the Shrinking Arena, if any. */
 export function shrinkInset(s: GameState): number {
-  const sh = s.config.shrink;
-  return sh ? clamp((s.time - sh.from) * sh.rate, 0, sh.max) : 0;
+  return s.shrinkNow;
 }
 
 function updateInset(s: GameState, dt: number): void {
+  const sh = s.config.shrink;
+  if (sh && s.time >= sh.from) s.shrinkNow = Math.min(sh.max, s.shrinkNow + sh.rate * dt);
   const target = Math.max(isActive(s, 'COLLAPSE') ? COLLAPSE_INSET : 0, shrinkInset(s));
   const delta = COLLAPSE_SPEED * dt;
   s.inset = s.inset < target ? Math.min(target, s.inset + delta) : Math.max(target, s.inset - delta);
@@ -729,13 +834,13 @@ function updateVoids(s: GameState, dt: number): void {
   if (s.time < s.config.warmup) return;
   s.voidTimer -= dt;
   if (s.voidTimer > 0) return;
-  s.voidTimer = VOID_CYCLE;
-  const count = 3 + (rampOf(s) > 0.6 ? 1 : 0);
+  s.voidTimer = s.config.voidCycle;
+  const count = s.config.voidCount;
   for (let n = 0, tries = 0; n < count && tries < 40; tries++) {
     const ix = Math.floor(s.rng() * VOID_GRID);
     const iy = Math.floor(s.rng() * VOID_GRID);
     if (s.voids.some((v) => v.ix === ix && v.iy === iy)) continue;
-    s.voids.push({ ix, iy, phase: 'warning', timer: VOID_WARN });
+    s.voids.push({ ix, iy, phase: 'warning', timer: Math.max(0.8, s.config.voidWarn) });
     n++;
   }
   s.events.push({ type: 'voidWarn' });
@@ -757,15 +862,16 @@ function isSafeSpot(s: GameState, x: number, y: number, pad: number): boolean {
   const z = s.chaos?.zone;
   if (z && chaosHas(s.chaos, 'HORIZON') && Math.hypot(x - z.x, y - z.y) > z.r - pad) return false;
   const b = s.boss;
-  if (b && Math.hypot(x - b.x, y - b.y) < b.r + 110) return false;
+  if (b && b.hp > 0 && Math.hypot(x - b.x, y - b.y) < b.r + 110) return false;
   return true;
 }
 
 function spawnOrb(s: GameState): void {
   let best: Vec | null = null;
+  const minDistance = Math.max(ORB_MIN_DISTANCE, s.config.orbMinDistance);
   for (let i = 0; i < 60; i++) {
     const spot = randomSpot(s, 80);
-    const far = Math.hypot(spot.x - s.player.x, spot.y - s.player.y) >= ORB_MIN_DISTANCE;
+    const far = Math.hypot(spot.x - s.player.x, spot.y - s.player.y) >= minDistance;
     if (isSafeSpot(s, spot.x, spot.y, 50) && far) {
       best = spot;
       break;
@@ -773,14 +879,15 @@ function spawnOrb(s: GameState): void {
     if (!best && isSafeSpot(s, spot.x, spot.y, 30)) best = spot;
   }
   const at = best ?? { x: ARENA / 2, y: ARENA * 0.25 };
-  s.orbs.push({ id: s.nextId++, x: at.x, y: at.y, age: 0 });
+  const bonus = s.config.bonusOrbChance > 0 && s.rng() < s.config.bonusOrbChance;
+  s.orbs.push({ id: s.nextId++, x: at.x, y: at.y, age: 0, bonus });
 }
 
 function updateOrbs(s: GameState, dt: number): void {
   if (!usesOrbs(s.config)) return;
   for (const o of s.orbs) o.age += dt;
-  // Relocate any orb that a closing wall, void or zone has made unreachable.
-  s.orbs = s.orbs.filter((o) => isSafeSpot(s, o.x, o.y, 20));
+  // Relocate any orb that a closing wall, void or zone has made unreachable; bonus orbs expire.
+  s.orbs = s.orbs.filter((o) => isSafeSpot(s, o.x, o.y, 20) && !(o.bonus && o.age > BONUS_ORB_LIFE));
   if (s.orbs.length < s.config.orbCount) {
     s.orbTimer -= dt;
     if (s.orbTimer <= 0) {
@@ -797,11 +904,12 @@ function collectOrbs(s: GameState): void {
     if (Math.hypot(o.x - p.x, o.y - p.y) > ORB_RADIUS + PLAYER_HIT_RADIUS + 4) continue;
     s.orbs = s.orbs.filter((x) => x !== o);
     s.stats.orbs++;
-    s.score += ORB_POINTS * multiplier(s);
-    addCombo(s, 3);
+    if (o.bonus) s.stats.bonusOrbs++;
+    s.score += (o.bonus ? BONUS_ORB_POINTS : ORB_POINTS) * multiplier(s);
+    addCombo(s, o.bonus ? 6 : 3);
     s.orbTimer = ORB_RESPAWN;
-    s.events.push({ type: 'orb', x: o.x, y: o.y, collected: s.stats.orbs, target });
-    if (s.boss) damageBoss(s);
+    s.events.push({ type: 'orb', x: o.x, y: o.y, collected: s.stats.orbs, target, bonus: o.bonus });
+    if (s.boss && s.boss.hp > 0 && s.boss.shield <= 0) damageBoss(s);
   }
 }
 
@@ -814,36 +922,86 @@ function damageBoss(s: GameState): void {
   s.events.push({ type: 'bossHit', hp: b.hp, x: b.x, y: b.y });
   if (b.hp === 0) {
     b.attack = null;
+    s.stats.bosses++;
     s.events.push({ type: 'bossDefeated', x: b.x, y: b.y });
     s.stats.hazardsDodged += s.hazards.length;
     s.hazards = [];
+    if (s.config.bossRush) {
+      s.score += 300 * s.stats.bosses * multiplier(s);
+      s.bossRespawn = BOSS_RESPAWN;
+    }
   }
+}
+
+/** Boss Rush: each new boss has more health and a higher tier. */
+export function bossRushHp(defeated: number): number {
+  return 3 + defeated * 2;
+}
+
+/** Where the next Boss Rush Core will appear: the centre if clear of the player, else the furthest inner spot. */
+export function nextBossSpot(s: GameState): Vec {
+  const p = s.player;
+  const spots: Vec[] = [
+    { x: ARENA / 2, y: ARENA / 2 },
+    { x: 260, y: 260 },
+    { x: ARENA - 260, y: 260 },
+    { x: 260, y: ARENA - 260 },
+    { x: ARENA - 260, y: ARENA - 260 },
+  ];
+  const dist = (v: Vec) => Math.hypot(v.x - p.x, v.y - p.y);
+  return dist(spots[0]) >= BOSS_RADIUS + 200 ? spots[0] : spots.reduce((a, b) => (dist(b) > dist(a) ? b : a));
+}
+
+function updateBossRush(s: GameState, dt: number): void {
+  const b = s.boss;
+  if (!s.config.bossRush || !b || b.hp > 0) return;
+  s.bossRespawn -= dt;
+  if (s.bossRespawn > 0) return;
+  const { x, y } = nextBossSpot(s);
+  const tier = Math.min(4, s.stats.bosses);
+  s.boss = newBoss(bossRushHp(s.stats.bosses), tier, x, y);
+  s.boss.shield = 1;
+  s.boss.cooldown = 1.2;
+  s.events.push({ type: 'bossSpawn', tier, x, y });
 }
 
 function bossRage(b: Boss): number {
   return 1 - b.hp / b.maxHp;
 }
 
+/** Attacks unlocked at each boss tier. */
+export function bossAttacks(tier: number): BossAttackKind[] {
+  const list: BossAttackKind[] = ['burst', 'summon'];
+  if (tier >= 1) list.push('beam');
+  if (tier >= 2) list.push('nova');
+  if (tier >= 3) list.push('twin');
+  return list;
+}
+
 function updateBoss(s: GameState, dt: number): void {
   const b = s.boss;
   if (!b || b.hp <= 0) return;
   b.hitFlash = Math.max(0, b.hitFlash - dt);
-  if (s.time < s.config.warmup) return;
+  b.shield = Math.max(0, b.shield - dt);
+  if (s.time < s.config.warmup || b.shield > 0) return;
   const rage = bossRage(b);
+  const haste = 1 + b.tier * 0.1;
   if (!b.attack) {
     b.cooldown -= dt;
     if (b.cooldown > 0) return;
-    const options: BossAttackKind[] = b.hp > b.maxHp * 0.6 ? ['burst', 'summon'] : ['burst', 'beam', 'summon'];
+    const options = bossAttacks(b.tier);
     const fresh = options.filter((k) => k !== b.last);
     const kind = fresh[Math.floor(s.rng() * fresh.length)];
     const towardPlayer = Math.atan2(s.player.y - b.y, s.player.x - b.x);
     b.attack = {
       kind,
       phase: 'tell',
-      timer: BOSS_TELL * (1 - rage * 0.25),
-      // Beams start on the far side of the boss; bursts leave their gap somewhere random.
-      angle: kind === 'beam' ? towardPlayer + Math.PI : s.rng() * Math.PI * 2,
+      // Shockwaves and twin beams are harder to read, so they get a longer warning.
+      timer: (kind === 'nova' || kind === 'twin' ? BOSS_TELL + 0.3 : BOSS_TELL) * (1 - rage * 0.2),
+      // A beam starts behind the Core, twin beams at right angles to you: never on top of the player.
+      angle: kind === 'beam' ? towardPlayer + Math.PI : kind === 'twin' ? towardPlayer + Math.PI / 2 : s.rng() * Math.PI * 2,
       spin: s.rng() < 0.5 ? 1 : -1,
+      radius: b.r,
     };
     b.last = kind;
     s.events.push({ type: 'bossTell', kind });
@@ -854,31 +1012,38 @@ function updateBoss(s: GameState, dt: number): void {
   if (a.phase === 'tell') {
     if (a.timer > 0) return;
     if (a.kind === 'burst') {
-      const count = 14 + Math.round(rage * 6);
-      const speed = 190 * (1 + rage * 0.3) * paceOf(s);
+      const count = 14 + Math.round(rage * 4) + b.tier * 2;
+      const speed = 190 * (1 + rage * 0.2) * haste * paceOf(s);
       for (let i = 3; i < count; i++) {
         const ang = a.angle + (i / count) * Math.PI * 2;
         addDrifter(s, b.x + Math.cos(ang) * b.r, b.y + Math.sin(ang) * b.r, Math.cos(ang) * speed, Math.sin(ang) * speed, 11);
       }
       endBossAttack(s);
     } else if (a.kind === 'summon') {
-      spawnPattern(s, s.rng() < 0.5 ? 'pincer' : 'wall');
+      const options: PatternKind[] = b.tier >= 2 ? ['pincer', 'wall', 'rain'] : ['pincer', 'wall'];
+      spawnPattern(s, options[Math.floor(s.rng() * options.length)]);
       endBossAttack(s);
     } else {
       a.phase = 'fire';
-      a.timer = BEAM_TIME;
+      a.timer = a.kind === 'nova' ? Infinity : BEAM_TIME;
     }
     return;
   }
+  if (a.kind === 'nova') {
+    // Expanding shockwave: slip through its gap.
+    a.radius += NOVA_SPEED * haste * dt;
+    if (a.radius > ARENA * 1.5) endBossAttack(s);
+    return;
+  }
   // Beam firing: sweep around the boss.
-  a.angle += a.spin * BEAM_SPEED * (1 + rage * 0.3) * dt;
+  a.angle += a.spin * BEAM_SPEED * (1 + rage * 0.2) * (a.kind === 'twin' ? 0.8 : haste) * dt;
   if (a.timer <= 0) endBossAttack(s);
 }
 
 function endBossAttack(s: GameState): void {
   const b = s.boss!;
   b.attack = null;
-  b.cooldown = 1.6 - bossRage(b) * 0.6;
+  b.cooldown = (1.6 - bossRage(b) * 0.5) / (1 + b.tier * 0.12);
 }
 
 // ---------- Hazards ----------
@@ -990,6 +1155,7 @@ function spawnHazard(s: GameState): void {
     age: 0,
     life: seeker ? SEEKER_LIFE : Infinity,
     grazed: false,
+    weave: !seeker && s.config.weaveChance > 0 && s.rng() < s.config.weaveChance ? 70 + s.rng() * 50 : undefined,
   });
 }
 
@@ -1033,7 +1199,7 @@ function updateHazards(s: GameState, dt: number): void {
         h.y = h.blink.y;
         h.blink = undefined;
         const speed = Math.hypot(h.vx, h.vy);
-        const aim = Math.atan2(p.y - h.y, p.x - h.x);
+        const aim = Math.atan2(p.y - h.y, p.x - h.x) + (s.rng() - 0.5) * 0.7;
         h.vx = Math.cos(aim) * speed;
         h.vy = Math.sin(aim) * speed;
         s.events.push({ type: 'teleport', x: h.x, y: h.y });
@@ -1049,6 +1215,13 @@ function updateHazards(s: GameState, dt: number): void {
     }
     h.x += h.vx * dt * pace;
     h.y += h.vy * dt * pace;
+    if (h.weave) {
+      // Side-to-side wave across its path: unpredictable-looking but smooth and readable.
+      const sp = Math.hypot(h.vx, h.vy) || 1;
+      const side = h.weave * 2.6 * Math.cos(h.age * 2.6) * dt * pace;
+      h.x += (-h.vy / sp) * side;
+      h.y += (h.vx / sp) * side;
+    }
     const inBounds =
       h.x > -OFFSCREEN_MARGIN && h.x < ARENA + OFFSCREEN_MARGIN && h.y > -OFFSCREEN_MARGIN && h.y < ARENA + OFFSCREEN_MARGIN;
     if (inBounds && h.age < h.life) kept.push(h);
@@ -1074,16 +1247,33 @@ function die(s: GameState, cause: DeathCause): void {
 }
 
 /** Whether the boss beam currently overlaps a point (with extra radius). */
-export function beamHits(b: Boss, x: number, y: number, radius: number): boolean {
-  const a = b.attack;
-  if (!a || a.kind !== 'beam' || a.phase !== 'fire') return false;
-  const dx = Math.cos(a.angle);
-  const dy = Math.sin(a.angle);
+function rayHits(b: Boss, angle: number, x: number, y: number, radius: number): boolean {
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
   const rx = x - b.x;
   const ry = y - b.y;
   const along = rx * dx + ry * dy;
   if (along < b.r - 6) return false;
   return Math.abs(rx * dy - ry * dx) < BEAM_HALF + radius;
+}
+
+/** Whether the boss beam (or twin beams) currently overlaps a point (with extra radius). */
+export function beamHits(b: Boss, x: number, y: number, radius: number): boolean {
+  const a = b.attack;
+  if (!a || a.phase !== 'fire') return false;
+  if (a.kind === 'beam') return rayHits(b, a.angle, x, y, radius);
+  if (a.kind === 'twin') return rayHits(b, a.angle, x, y, radius) || rayHits(b, a.angle + Math.PI, x, y, radius);
+  return false;
+}
+
+/** Whether the expanding shockwave overlaps a point, outside its safe gap. */
+export function novaHits(b: Boss, x: number, y: number, radius: number): boolean {
+  const a = b.attack;
+  if (!a || a.kind !== 'nova' || a.phase !== 'fire') return false;
+  const d = Math.hypot(x - b.x, y - b.y);
+  if (Math.abs(d - a.radius) > NOVA_HALF + radius) return false;
+  const off = Math.atan2(Math.sin(Math.atan2(y - b.y, x - b.x) - a.angle), Math.cos(Math.atan2(y - b.y, x - b.x) - a.angle));
+  return Math.abs(off) > NOVA_GAP;
 }
 
 function checkCollisions(s: GameState): void {
@@ -1127,6 +1317,7 @@ function checkCollisions(s: GameState): void {
   if (b && b.hp > 0) {
     if (Math.hypot(p.x - b.x, p.y - b.y) < b.r + PLAYER_HIT_RADIUS) return die(s, 'boss');
     if (beamHits(b, p.x, p.y, PLAYER_HIT_RADIUS)) return die(s, 'beam');
+    if (novaHits(b, p.x, p.y, PLAYER_HIT_RADIUS)) return die(s, 'nova');
   }
 
   if (isActive(s, 'HORIZON') && s.chaos!.zone) {
@@ -1145,10 +1336,16 @@ function checkCollisions(s: GameState): void {
   }
 }
 
+/** Objective met: clear the board and play a short celebration before the victory screen. */
 function win(s: GameState, bonus = 0): void {
   s.score += bonus;
-  s.status = 'won';
-  s.events.push({ type: 'victory' });
+  s.stats.hazardsDodged += s.hazards.length;
+  s.hazards = [];
+  s.sweeps = [];
+  s.voids = [];
+  s.chaos = null;
+  s.finishing = Math.max(0.0001, s.config.finishDelay);
+  s.events.push({ type: 'objectiveComplete' });
 }
 
 function checkObjective(s: GameState): void {
@@ -1165,6 +1362,16 @@ function checkObjective(s: GameState): void {
 /** Advance the simulation by dt seconds. Callers should keep dt small (<= 1/60). */
 export function step(s: GameState, input: Vec, dt: number): void {
   if (s.status !== 'playing') return;
+  if (s.finishing > 0) {
+    // Celebration: the player can move, nothing can hurt them.
+    updatePlayer(s, input, dt);
+    s.finishing -= dt;
+    if (s.finishing <= 0) {
+      s.status = 'won';
+      s.events.push({ type: 'victory' });
+    }
+    return;
+  }
   s.time += dt;
   s.score += POINTS_PER_SECOND * multiplier(s) * dt;
   if (s.combo > 0) {
@@ -1182,6 +1389,7 @@ export function step(s: GameState, input: Vec, dt: number): void {
   updateZone(s, dt);
   updateVoids(s, dt);
   updateBoss(s, dt);
+  updateBossRush(s, dt);
   updateSpawning(s, dt);
   updatePatterns(s, dt);
   updateHazards(s, dt);
@@ -1192,4 +1400,5 @@ export function step(s: GameState, input: Vec, dt: number): void {
   if (s.status === 'playing') updateMilestones(s);
   s.stats.peakLevel = Math.max(s.stats.peakLevel, difficulty(effectiveTime(s)).level);
   checkObjective(s);
+  if (s.status === 'playing' && s.finishing <= 0) updatePhases(s);
 }

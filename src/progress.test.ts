@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { starThresholds } from './game/stages';
 import {
   PROGRESS_KEY,
+  SAVE_VERSION,
   SKIP_AFTER_FAILS,
   applyRun,
   canOfferSkip,
@@ -205,5 +206,71 @@ describe('save migration', () => {
     expect(p.endlessBest).toBe(1234);
     expect(p.achievements).toEqual(['first-run']);
     expect(p.runs).toBe(7);
+  });
+});
+
+describe('Endless mode personal bests', () => {
+  const endless = (mode: RunSummary['mode'], over: Partial<RunSummary>) => runOf({ mode, stage: -1, ...over });
+
+  it('records each mode separately and reports which bests improved', () => {
+    const a = applyRun(defaultProgress(), endless('orbrush', { score: 900, time: 40, orbs: 22 }));
+    expect(a.progress.modeBests.orbrush).toMatchObject({ score: 900, time: 40, orbs: 22 });
+    expect(a.newBests.sort()).toEqual(['orbs', 'score', 'time']);
+    expect(a.progress.modeBests.chaos.score).toBe(0);
+  });
+
+  it('a lower result never overwrites a higher best, field by field', () => {
+    let p = applyRun(defaultProgress(), endless('bossrush', { score: 2000, time: 60, bosses: 3 })).progress;
+    const out = applyRun(p, endless('bossrush', { score: 2500, time: 30, bosses: 1 }));
+    p = out.progress;
+    expect(p.modeBests.bossrush).toMatchObject({ score: 2500, time: 60, bosses: 3 });
+    expect(out.newBests).toEqual(['score']);
+  });
+
+  it('Classic Survival keeps the legacy endless best in sync', () => {
+    const p = applyRun(defaultProgress(), endless('endless', { score: 777, time: 70 })).progress;
+    expect(p.endlessBest).toBe(777);
+    expect(p.modeBests.endless.score).toBe(777);
+  });
+
+  it('awards the new mode achievements', () => {
+    const ids = (r: RunSummary) => applyRun(defaultProgress(), r).newAchievements.map((a) => a.id);
+    expect(ids(endless('orbrush', { orbs: 31, score: 1 }))).toContain('orbrush-30');
+    expect(ids(endless('chaos', { events: 10, score: 1 }))).toContain('chaos-10');
+    expect(ids(endless('bossrush', { bosses: 3, score: 1 }))).toContain('bossrush-3');
+    expect(ids(endless('endless', { time: 121, score: 1 }))).toContain('classic-120');
+  });
+
+  it('restarting does not reset lifetime stats or campaign progress', () => {
+    let p = applyRun(defaultProgress(), runOf({ stage: 0, won: true, score: 220, time: 15 })).progress;
+    p = applyRun(p, endless('chaos', { score: 300, time: 20, events: 2 })).progress;
+    p = applyRun(p, endless('chaos', { score: 100, time: 8, events: 0 })).progress;
+    expect(p.runs).toBe(3);
+    expect(p.stages[0].stars).toBeGreaterThanOrEqual(1);
+    expect(p.modeBests.chaos.score).toBe(300);
+  });
+});
+
+describe('save version 3 migration', () => {
+  it('upgrades an older save without losing campaign progress, and seeds the Classic best', () => {
+    const store = memoryStore();
+    store.setItem(
+      PROGRESS_KEY,
+      JSON.stringify({ levelsVersion: 2, stages: { 0: { stars: 2, best: 150 }, 1: { stars: 1, best: 300 } }, endlessBest: 640, achievements: ['first-run'], runs: 9, settings: { muted: true } }),
+    );
+    const p = loadProgress(store);
+    expect(p.saveVersion).toBe(SAVE_VERSION);
+    expect(p.stages[1]).toEqual({ stars: 1, best: 300 });
+    expect(p.modeBests.endless.score).toBe(640);
+    expect(p.modeBests.orbrush.score).toBe(0);
+    expect(p.settings.muted).toBe(true); // mute preference survives
+    expect(p.settings.music).toBe(true); // new settings get defaults
+  });
+
+  it('persists the mute preference', () => {
+    const store = memoryStore();
+    const p = defaultProgress();
+    saveProgress({ ...p, settings: { ...p.settings, muted: true } }, store);
+    expect(loadProgress(store).settings.muted).toBe(true);
   });
 });

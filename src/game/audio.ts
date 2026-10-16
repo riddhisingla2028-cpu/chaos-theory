@@ -1,5 +1,5 @@
 // Tiny synthesized sound effects via the Web Audio API. No audio files, no dependencies.
-// The context is created on the first user gesture, as browsers require.
+// The context is created and resumed only inside genuine user gestures, as mobile browsers require.
 
 export type SoundName =
   | 'click'
@@ -23,33 +23,174 @@ export type SoundName =
 
 type Wave = OscillatorType;
 
+/**
+ * What the player can expect to hear:
+ * - locked: no gesture yet, so the browser has not allowed audio
+ * - running: sound works
+ * - suspended: the browser paused audio (blocked, backgrounded or interrupted); a tap resumes it
+ * - unavailable: this device or browser has no usable Web Audio
+ */
+export type AudioState = 'locked' | 'running' | 'suspended' | 'unavailable';
+
+export type ContextFactory = () => AudioContext | null;
+
+const defaultFactory: ContextFactory = () => {
+  const Ctor =
+    typeof window === 'undefined'
+      ? undefined
+      : window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  return Ctor ? new Ctor() : null;
+};
+
+/** iOS: ask for "playback" so the hardware silent switch does not mute the game (Safari 17+). */
+function preferPlaybackSession(): void {
+  try {
+    const nav = navigator as Navigator & { audioSession?: { type: string } };
+    if (nav.audioSession && nav.audioSession.type !== 'playback') nav.audioSession.type = 'playback';
+  } catch {
+    // not supported: harmless
+  }
+}
+
 export class Sfx {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private lastNear = 0;
   private lastHover = 0;
   private ambient: { gain: GainNode; nodes: AudioScheduledSourceNode[] } | null = null;
+  private wantAmbient = false;
+  private state: AudioState = 'locked';
+  private listeners = new Set<(s: AudioState) => void>();
   muted = false;
 
-  unlock(): void {
+  constructor(private readonly factory: ContextFactory = defaultFactory) {}
+
+  get audioState(): AudioState {
+    return this.state;
+  }
+
+  /** Subscribe to audio state changes (for the sound button). Returns an unsubscribe function. */
+  subscribe(fn: (s: AudioState) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  private setState(next: AudioState): void {
+    if (next === this.state) return;
+    this.state = next;
+    if (next === 'running') this.syncAmbient();
+    else this.stopAmbient();
+    this.listeners.forEach((fn) => fn(next));
+  }
+
+  private syncState(): void {
+    const st = this.ctx?.state as string | undefined;
+    if (!this.ctx) return;
+    // 'interrupted' (iOS) and 'closed' are treated as suspended: a later tap can recover.
+    this.setState(st === 'running' ? 'running' : 'suspended');
+  }
+
+  /**
+   * Start or resume audio. Call it from inside a genuine user gesture (click, touchend, keydown).
+   * Safe to call repeatedly: it creates at most one AudioContext and resolves once the browser
+   * has confirmed the result.
+   */
+  unlock(): Promise<AudioState> {
+    if (this.state === 'unavailable') return Promise.resolve(this.state);
     try {
-      if (this.ctx) {
-        if (this.ctx.state === 'suspended') void this.ctx.resume();
-        return;
+      if (!this.ctx) {
+        const ctx = this.factory();
+        if (!ctx) {
+          this.setState('unavailable');
+          return Promise.resolve(this.state);
+        }
+        this.ctx = ctx;
+        // Master volume through a compressor so stacked sounds never clip.
+        const comp = ctx.createDynamicsCompressor();
+        comp.threshold.value = -14;
+        comp.ratio.value = 6;
+        this.master = ctx.createGain();
+        this.master.gain.value = 0.16;
+        this.master.connect(comp).connect(ctx.destination);
+        ctx.onstatechange = () => this.syncState();
+        preferPlaybackSession();
       }
-      const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!Ctor) return;
-      this.ctx = new Ctor();
-      this.master = this.ctx.createGain();
-      this.master.gain.value = 0.16;
-      this.master.connect(this.ctx.destination);
+      const ctx = this.ctx;
+      if (ctx.state === 'running') {
+        this.setState('running');
+        return Promise.resolve(this.state);
+      }
+      this.primeSilently();
+      return Promise.resolve(ctx.resume()).then(
+        () => {
+          this.syncState();
+          return this.state;
+        },
+        () => {
+          // The browser refused (no valid gesture). Stay quiet; the next tap will try again.
+          this.syncState();
+          return this.state;
+        },
+      );
     } catch {
-      this.ctx = null; // audio unavailable: play silently
+      this.setState('unavailable');
+      return Promise.resolve(this.state);
     }
   }
 
+  /** Try to resume after returning to the tab; works only where the browser allows it without a tap. */
+  resumeIfPossible(): void {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state === 'running' || (ctx.state as string) === 'closed') return;
+    try {
+      Promise.resolve(ctx.resume()).then(
+        () => this.syncState(),
+        () => this.syncState(),
+      );
+    } catch {
+      this.syncState();
+    }
+  }
+
+  /** A one-sample silent buffer played inside the gesture: the classic iOS audio unlock. */
+  private primeSilently(): void {
+    try {
+      const ctx = this.ctx!;
+      const src = ctx.createBufferSource();
+      src.buffer = ctx.createBuffer(1, 1, 22050);
+      src.connect(ctx.destination);
+      src.start(0);
+    } catch {
+      // ignore: priming is best-effort
+    }
+  }
+
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+    this.syncAmbient();
+  }
+
+  /** Menu music on or off. Starts only once audio is running and unmuted; never duplicates. */
+  setAmbient(on: boolean): void {
+    this.wantAmbient = on;
+    this.syncAmbient();
+  }
+
+  private syncAmbient(): void {
+    if (this.wantAmbient && !this.muted && this.state === 'running') this.startAmbient();
+    else this.stopAmbient();
+  }
+
   play(name: SoundName): void {
-    if (this.muted || !this.ctx || !this.master || this.ctx.state !== 'running') return;
+    if (this.muted || !this.ctx || !this.master || this.state !== 'running') return;
+    try {
+      this.playUnsafe(name);
+    } catch {
+      // Audio must never break the game.
+    }
+  }
+
+  private playUnsafe(name: SoundName): void {
     switch (name) {
       case 'click':
         this.tone(660, 0.05, 'triangle', 0.25);
@@ -67,7 +208,7 @@ export class Sfx {
         this.tone(55, 0.6, 'sine', 0.6);
         break;
       case 'near': {
-        const now = this.ctx.currentTime;
+        const now = this.ctx!.currentTime;
         if (now - this.lastNear < 0.06) return;
         this.lastNear = now;
         this.tone(1200 + Math.random() * 400, 0.06, 'sine', 0.3);
@@ -96,7 +237,7 @@ export class Sfx {
         this.tone(1568, 0.35, 'sine', 0.3, 0.08);
         break;
       case 'hover': {
-        const now = this.ctx.currentTime;
+        const now = this.ctx!.currentTime;
         if (now - this.lastHover < 0.05) return;
         this.lastHover = now;
         this.tone(1760, 0.03, 'sine', 0.08);
@@ -131,11 +272,10 @@ export class Sfx {
     }
   }
 
-  /** Low ambient pad for the menus. Safe to call repeatedly. */
-  setAmbient(on: boolean): void {
+  private startAmbient(): void {
     const ctx = this.ctx;
-    if (!ctx || !this.master) return;
-    if (on && !this.muted && !this.ambient && ctx.state === 'running') {
+    if (!ctx || !this.master || this.ambient) return;
+    try {
       const gain = ctx.createGain();
       gain.gain.setValueAtTime(0.0001, ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + 2.5);
@@ -161,14 +301,29 @@ export class Sfx {
       filter.connect(gain).connect(this.master);
       nodes.forEach((n) => n.start());
       this.ambient = { gain, nodes };
-    } else if ((!on || this.muted) && this.ambient) {
-      const { gain, nodes } = this.ambient;
+    } catch {
       this.ambient = null;
-      gain.gain.cancelScheduledValues(ctx.currentTime);
-      gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.8);
-      nodes.forEach((n) => n.stop(ctx.currentTime + 0.9));
     }
+  }
+
+  private stopAmbient(): void {
+    const ctx = this.ctx;
+    const amb = this.ambient;
+    if (!ctx || !amb) return;
+    this.ambient = null;
+    try {
+      amb.gain.gain.cancelScheduledValues(ctx.currentTime);
+      amb.gain.gain.setValueAtTime(Math.max(0.0001, amb.gain.gain.value), ctx.currentTime);
+      amb.gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
+      amb.nodes.forEach((n) => n.stop(ctx.currentTime + 0.7));
+    } catch {
+      // already stopped
+    }
+  }
+
+  /** Number of live music loops (for tests: must never exceed 1). */
+  get ambientLoops(): number {
+    return this.ambient ? 1 : 0;
   }
 
   private tone(freq: number, dur: number, type: Wave, vol: number, delay = 0, slideTo?: number): void {

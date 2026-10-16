@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react';
+import type { AudioState } from '../game/audio';
 import { shapeSvgPath } from '../game/shapes';
 import type { ShapeId } from '../progress';
 
@@ -90,6 +91,39 @@ export function IconButton({ label, onClick, children, disabled }: { label: stri
   return (
     <button type="button" className="icon-btn" onClick={onClick} aria-label={label} title={label} disabled={disabled}>
       {children}
+    </button>
+  );
+}
+
+/**
+ * Sound control that reflects the real audio state: muted, playing, blocked by the browser
+ * (shows "Tap to enable sound") or unavailable on this device.
+ */
+export function SoundToggle({ muted, audioState, onToggle, onEnable }: { muted: boolean; audioState: AudioState; onToggle: () => void; onEnable: () => void }) {
+  if (!muted && (audioState === 'suspended' || audioState === 'locked')) {
+    return (
+      <span className="sound-group">
+        <button type="button" className="sound-enable" onClick={onEnable} aria-label="Tap to enable sound">
+          <SoundIcon muted={false} />
+          <span>Tap to enable sound</span>
+        </button>
+        <IconButton label="Mute sound" onClick={onToggle}>
+          <SoundIcon muted />
+        </IconButton>
+      </span>
+    );
+  }
+  const unavailable = audioState === 'unavailable';
+  return (
+    <button
+      type="button"
+      className={`icon-btn${unavailable ? ' icon-btn-warn' : ''}`}
+      onClick={onToggle}
+      aria-label={unavailable ? 'Sound is not available on this device' : muted ? 'Unmute sound' : 'Mute sound'}
+      aria-pressed={muted}
+      title={unavailable ? 'Sound is not available on this device' : muted ? 'Unmute sound' : 'Mute sound'}
+    >
+      <SoundIcon muted={muted || unavailable} />
     </button>
   );
 }

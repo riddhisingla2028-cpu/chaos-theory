@@ -1,7 +1,7 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 
 import type { Look } from '../game/render';
-import { STAGES, TRIALS, objectiveText, stageConfig, starThresholds, type Mutator } from '../game/stages';
+import { ENDLESS_MODES, STAGES, TRIALS, objectiveText, stageConfig, starThresholds, type EndlessId, type Mutator } from '../game/stages';
 import {
   ACHIEVEMENTS,
   SHAPES,
@@ -17,7 +17,10 @@ import {
   type RecordEntry,
 } from '../progress';
 import { LevelPreview } from './LevelPreview';
-import { BackButton, LockIcon, ShapePreview, SoundIcon, Stars } from './common';
+import { AdSlot } from './AdSlot';
+import { PURCHASES_AVAILABLE, type PremiumStatus } from '../monetization/entitlements';
+import type { AudioState } from '../game/audio';
+import { BackButton, LockIcon, ShapePreview, SoundToggle, Stars } from './common';
 
 const rgb = (c: [number, number, number]) => `rgb(${c.join(',')})`;
 const DIFFICULTY = ['', 'Easy', 'Easy', 'Medium', 'Hard', 'Brutal'];
@@ -44,7 +47,8 @@ export function Pips({ value, max = 5 }: { value: number; max?: number }) {
 
 export function SplashScreen({ isTouch, onEnter }: { isTouch: boolean; onEnter: () => void }) {
   return (
-    <div className="screen splash" onPointerDown={onEnter} role="button" tabIndex={0} aria-label="Start">
+    // click (not pointerdown): iOS only lets audio start on touchend/click, so this tap unlocks sound.
+    <div className="screen splash" onClick={onEnter} role="button" tabIndex={0} aria-label="Start">
       <div className="splash-inner">
         <p className="eyebrow">A survival game where the rules break</p>
         <h1 className="logo logo-xl" data-text="CHAOS THEORY">
@@ -64,11 +68,13 @@ export function HomeScreen(props: {
   progress: Progress;
   daily: { mutator: Mutator; best: number };
   muted: boolean;
+  audioState: AudioState;
   isTouch: boolean;
   onToggleSound: () => void;
+  onEnableSound: () => void;
   onPlay: () => void;
   onLevels: () => void;
-  onEndless: () => void;
+  onModes: () => void;
   onDaily: () => void;
   onTrials: () => void;
   onCollection: () => void;
@@ -91,10 +97,8 @@ export function HomeScreen(props: {
             ★ {totalStars(p)}
             <span className="dim">/{maxStars()}</span>
           </span>
-          {p.premiumDemo && <span className="plus-chip">Chaos+ demo</span>}
-          <button type="button" className="icon-btn" onClick={props.onToggleSound} aria-label={props.muted ? 'Unmute sound' : 'Mute sound'}>
-            <SoundIcon muted={props.muted} />
-          </button>
+          {p.premiumDemo && <span className="plus-chip">Cosmetics preview</span>}
+          <SoundToggle muted={props.muted} audioState={props.audioState} onToggle={props.onToggleSound} onEnable={props.onEnableSound} />
         </div>
       </header>
 
@@ -122,10 +126,11 @@ export function HomeScreen(props: {
 
         <section className="mode-tiles" aria-label="Game modes">
           <ModeTile title="Levels" meta={`${cleared}/${STAGES.length} cleared`} glyph="map" onClick={props.onLevels} />
-          <ModeTile title="Endless" meta={`Best ${p.endlessBest.toLocaleString()}`} glyph="infinity" onClick={props.onEndless} />
+          <ModeTile title="Endless Modes" meta="4 modes · always unlocked" glyph="infinity" onClick={props.onModes} featured />
           <ModeTile title="Daily" meta={`${props.daily.mutator.name}${props.daily.best ? ` · ${props.daily.best.toLocaleString()}` : ''}`} glyph="sun" onClick={props.onDaily} />
           <ModeTile title="Trials" meta={p.premiumDemo ? `${TRIALS.length} bonus challenges` : 'Chaos+'} glyph="bolt" onClick={props.onTrials} badge={!p.premiumDemo ? 'Plus' : undefined} />
         </section>
+        <AdSlot placement="home_banner" />
       </main>
 
       <nav className="bottom-nav" aria-label="More">
@@ -134,7 +139,7 @@ export function HomeScreen(props: {
         </button>
         <button type="button" onClick={props.onRecords}>Records</button>
         <button type="button" onClick={props.onPremium} className="nav-plus">
-          Chaos+
+          Chaos+ Ad-Free
         </button>
         <button type="button" onClick={props.onSettings}>Settings</button>
         <button type="button" onClick={props.onTutorial}>How to play</button>
@@ -156,13 +161,21 @@ function Glyph({ name }: { name: string }) {
         </g>
       )}
       {name === 'bolt' && <path {...common} d="M18 3L8 18h7l-2 11 10-15h-7z" />}
+      {name === 'orb' && <path {...common} d="M16 4l7 12-7 12-7-12z" />}
+      {name === 'chaos' && <path {...common} d="M6 10h12l-4-4M26 22H14l4 4M6 22c6 0 8-12 20-12" />}
+      {name === 'core' && (
+        <g {...common}>
+          <circle cx="16" cy="16" r="5" />
+          <circle cx="16" cy="16" r="11" strokeDasharray="4 3" />
+        </g>
+      )}
     </svg>
   );
 }
 
-function ModeTile({ title, meta, glyph, onClick, badge }: { title: string; meta: string; glyph: string; onClick: () => void; badge?: string }) {
+function ModeTile({ title, meta, glyph, onClick, badge, featured }: { title: string; meta: string; glyph: string; onClick: () => void; badge?: string; featured?: boolean }) {
   return (
-    <button type="button" className="mode-tile" onClick={onClick}>
+    <button type="button" className={`mode-tile${featured ? ' mode-tile-featured' : ''}`} onClick={onClick}>
       <span className="mode-glyph">
         <Glyph name={glyph} />
       </span>
@@ -199,6 +212,7 @@ export function LevelMap(props: { progress: Progress; themeLook: Pick<Look, 'are
         </span>
       </header>
       <div className="levels-body">
+        <div className="levels-left">
         <ol className="level-path">
           {STAGES.map((s, i) => {
             const open = isStageUnlocked(p, i);
@@ -216,6 +230,8 @@ export function LevelMap(props: { progress: Progress; themeLook: Pick<Look, 'are
             );
           })}
         </ol>
+        <AdSlot placement="level_select_banner" />
+        </div>
 
         <aside className="level-detail" style={{ '--lvl': rgb(st.accent) } as CSSProperties} aria-live="polite">
           <p className="eyebrow eyebrow-lvl">
@@ -243,6 +259,14 @@ export function LevelMap(props: { progress: Progress; themeLook: Pick<Look, 'are
               <Pips value={st.difficulty} />
             </span>
           </div>
+          <ol className="phase-list" aria-label="Phases">
+            {st.phases.map((ph, k) => (
+              <li key={ph.name}>
+                <span className="phase-num">{k + 1}</span>
+                {unlocked || k === 0 ? ph.name : '???'}
+              </li>
+            ))}
+          </ol>
           <div className="chips">
             {st.mechanics.map((m) => (
               <span key={m} className="chip chip-lvl">
@@ -279,10 +303,91 @@ export function LevelMap(props: { progress: Progress; themeLook: Pick<Look, 'are
   );
 }
 
+// ---------- Endless modes ----------
+
+const MODE_GLYPH: Record<EndlessId, string> = { endless: 'infinity', orbrush: 'orb', chaos: 'chaos', bossrush: 'core' };
+
+/** The personal-best numbers that matter for each mode. */
+export function modeBestRows(id: EndlessId, b: Progress['modeBests'][EndlessId]): [string, string][] {
+  const time = `${b.time.toFixed(1)}s`;
+  if (id === 'orbrush') return [['Best orbs', String(b.orbs)], ['Best score', b.score.toLocaleString()], ['Longest run', time]];
+  if (id === 'chaos') return [['Best score', b.score.toLocaleString()], ['Most events', String(b.events)], ['Longest run', time]];
+  if (id === 'bossrush') return [['Best streak', `${b.bosses} ${b.bosses === 1 ? 'boss' : 'bosses'}`], ['Best score', b.score.toLocaleString()], ['Longest run', time]];
+  return [['Best time', time], ['Best score', b.score.toLocaleString()], ['Most events', String(b.events)]];
+}
+
+export function ModesScreen(props: { progress: Progress; themeLook: Pick<Look, 'arena' | 'accent' | 'shape'>; initial: EndlessId; onStart: (id: EndlessId) => void; onBack: () => void }) {
+  const [selected, setSelected] = useState<EndlessId>(props.initial);
+  const mode = ENDLESS_MODES.find((m) => m.id === selected)!;
+  const best = props.progress.modeBests[selected];
+  const look: Look = { ...props.themeLook, glow: mode.accent, motif: mode.motif, heat: 0.3, shake: false };
+  return (
+    <div className="screen modes">
+      <header className="screen-top">
+        <BackButton onClick={props.onBack} />
+        <h2 className="screen-heading">Endless Modes</h2>
+        <span className="player-chip">Always unlocked</span>
+      </header>
+      <div className="levels-body">
+        <ul className="mode-list">
+          {ENDLESS_MODES.map((m) => {
+            const b = props.progress.modeBests[m.id];
+            const [label, value] = modeBestRows(m.id, b)[0];
+            return (
+              <li key={m.id} style={{ '--lvl': rgb(m.accent) } as CSSProperties}>
+                <button type="button" className={`mode-card${m.id === selected ? ' selected' : ''}`} onClick={() => setSelected(m.id)} aria-pressed={m.id === selected}>
+                  <span className="mode-card-glyph">
+                    <Glyph name={MODE_GLYPH[m.id]} />
+                  </span>
+                  <span className="mode-card-text">
+                    <span className="mode-card-name">{m.name}</span>
+                    <span className="mode-card-tag">{m.tagline}</span>
+                  </span>
+                  <span className="mode-card-best">
+                    <span className="dim">{label}</span>
+                    {value}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <aside className="level-detail" style={{ '--lvl': rgb(mode.accent) } as CSSProperties} aria-live="polite">
+          <p className="eyebrow eyebrow-lvl">Endless mode</p>
+          <h3 className="detail-name">{mode.name}</h3>
+          <p className="detail-tag">{mode.objective}</p>
+          <div className="preview">
+            <LevelPreview key={selected} config={mode.config} look={look} clip={12} label={`Preview of ${mode.name}`} />
+          </div>
+          <ul className="rule-list">
+            {mode.rules.map((rule) => (
+              <li key={rule}>{rule}</li>
+            ))}
+          </ul>
+          <div className="best-grid">
+            {modeBestRows(selected, best).map(([k, v]) => (
+              <span key={k} className="fact">
+                <span className="fact-label">{k}</span>
+                <span className="fact-value">{v}</span>
+              </span>
+            ))}
+          </div>
+          <button type="button" className="btn btn-primary btn-play" onClick={() => props.onStart(selected)}>
+            Start {mode.name}
+          </button>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Records ----------
 
 const MODE_TABS: { mode: RecordEntry['mode']; label: string }[] = [
-  { mode: 'endless', label: 'Endless' },
+  { mode: 'endless', label: 'Classic' },
+  { mode: 'orbrush', label: 'Orb Rush' },
+  { mode: 'chaos', label: 'Chaos' },
+  { mode: 'bossrush', label: 'Boss Rush' },
   { mode: 'daily', label: 'Daily' },
   { mode: 'stage', label: 'Levels' },
   { mode: 'trial', label: 'Trials' },
@@ -318,7 +423,7 @@ export function RecordsScreen({ progress: p, onBack }: { progress: Progress; onB
           ))}
         </section>
         <section className="board">
-          <div className="tabs" role="tablist">
+          <div className="tabs tabs-wrap" role="tablist">
             {MODE_TABS.map((t) => (
               <button key={t.mode} type="button" role="tab" aria-selected={tab === t.mode} className={`tab${tab === t.mode ? ' tab-on' : ''}`} onClick={() => setTab(t.mode)}>
                 {t.label}
@@ -348,35 +453,21 @@ export function RecordsScreen({ progress: p, onBack }: { progress: Progress; onB
 
 // ---------- Chaos+ (demo premium tier) ----------
 
-export function DemoCheckout({ item, price, onConfirm, onCancel }: { item: string; price: string; onConfirm: () => void; onCancel: () => void }) {
-  return (
-    <div className="modal" role="dialog" aria-modal="true" aria-labelledby="demo-title">
-      <div className="modal-card">
-        <p className="demo-flag">Demo mode · no real payment</p>
-        <h3 id="demo-title" className="modal-title">{item}</h3>
-        <p className="modal-price">
-          <s>{price}</s> <strong>₹0 demo</strong>
-        </p>
-        <p className="modal-text">
-          This is a simulated checkout for review. No payment details are collected and nothing is charged. In a real release, this
-          button would open a secure payment page, and the purchase would be verified on a server before anything unlocks.
-        </p>
-        <div className="actions">
-          <button type="button" className="btn btn-primary" onClick={onConfirm} autoFocus>
-            Confirm demo
-          </button>
-          <button type="button" className="btn" onClick={onCancel}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+const PREMIUM_STATUS_TEXT: Record<PremiumStatus, string> = {
+  loading: 'Checking purchase status…',
+  free: 'Free version · no verified purchase on this device',
+  premium: 'Chaos+ Ad-Free active (verified purchase)',
+  unavailable: 'Purchase status could not be checked right now',
+};
 
-export function PremiumScreen(props: { progress: Progress; onUnlock: () => void; onRemove: () => void; onPlayTrial: (i: number) => void; onBack: () => void }) {
+export function PremiumScreen(props: {
+  progress: Progress;
+  premiumStatus: PremiumStatus;
+  onPreviewCosmetics: (on: boolean) => void;
+  onPlayTrial: (i: number) => void;
+  onBack: () => void;
+}) {
   const p = props.progress;
-  const [checkout, setCheckout] = useState(false);
   const premiumShapes = SHAPES.filter((s) => s.premium);
   const premiumThemes = THEMES.filter((t) => t.premium);
   return (
@@ -384,45 +475,58 @@ export function PremiumScreen(props: { progress: Progress; onUnlock: () => void;
       <header className="screen-top">
         <BackButton onClick={props.onBack} />
         <h2 className="screen-heading">Chaos+</h2>
-        <span className="demo-pill">Demo</span>
+        <span className="demo-pill">Coming soon</span>
       </header>
       <div className="screen-scroll">
         <section className="plus-hero">
-          <p className="eyebrow">Optional upgrade · cosmetic only</p>
+          <p className="eyebrow">Optional upgrade · no gameplay advantage</p>
           <h1 className="plus-logo">
             CHAOS<span>+</span>
           </h1>
-          <p className="hero-tag">Exclusive looks, bonus challenges and level skips. The full game stays free to finish.</p>
+          <p className="hero-tag">Chaos+ Ad-Free removes advertising and adds exclusive looks. The full game stays free to play and finish.</p>
         </section>
 
         <section className="perk-grid">
-          <Perk title="Exclusive skins" text="Two premium player shapes.">
+          <Perk title="No ads" text="Advertising is removed from every placement: home, levels and results.">
+            <span className="perk-art perk-icon">⊘</span>
+          </Perk>
+          <Perk title="Everything stays free" text="All 10 levels, the 4 Endless Modes and the daily challenge remain free for everyone.">
+            <span className="perk-art perk-icon">∞</span>
+          </Perk>
+          <Perk title="Fair play" text="No extra lives, no easier levels, no score boosts. Only cosmetics.">
+            <span className="perk-art perk-icon">=</span>
+          </Perk>
+          <Perk title="Exclusive looks" text="Two premium skins, two neon themes and two bonus trials.">
             <span className="perk-art">
               {premiumShapes.map((s) => (
-                <ShapePreview key={s.id} shape={s.id} size={36} />
+                <ShapePreview key={s.id} shape={s.id} size={30} />
               ))}
-            </span>
-          </Perk>
-          <Perk title="Neon arenas" text="Synthwave and Aurora colour themes.">
-            <span className="perk-art">
               {premiumThemes.map((t) => (
-                <span key={t.id} className="swatch-lg" style={{ background: t.arena, boxShadow: `inset 0 0 0 2px ${rgb(t.accent)}, 0 0 16px ${rgb(t.accent)}` }} />
+                <span key={t.id} className="swatch-lg" style={{ background: t.arena, boxShadow: `inset 0 0 0 2px ${rgb(t.accent)}, 0 0 12px ${rgb(t.accent)}` }} />
               ))}
             </span>
-          </Perk>
-          <Perk title="Bonus trials" text={TRIALS.map((t) => t.name).join(' · ')}>
-            <span className="perk-art perk-icon">⚡</span>
-          </Perk>
-          <Perk title="Unlimited skips" text="Skip any level you are stuck on, no extra charge.">
-            <span className="perk-art perk-icon">»</span>
           </Perk>
         </section>
 
-        {p.premiumDemo ? (
-          <section className="plus-owned">
-            <p className="plus-active">Chaos+ is active (demo)</p>
-            <p className="dim">Equip the new shapes and themes in Collection.</p>
-            <h3 className="section-title">Trials</h3>
+        <section className="plus-buy">
+          <p className="plus-status">{PREMIUM_STATUS_TEXT[props.premiumStatus]}</p>
+          <button type="button" className="play-now play-now-plus" disabled={!PURCHASES_AVAILABLE} aria-disabled={!PURCHASES_AVAILABLE}>
+            <span className="play-now-label">{PURCHASES_AVAILABLE ? 'Get Chaos+ Ad-Free' : 'Coming soon'}</span>
+            <span className="play-now-sub">Purchases open once a payment provider and verification server are set up</span>
+          </button>
+          <p className="dim small">No payment is possible today, and nothing on this page charges money.</p>
+        </section>
+
+        <section className="plus-owned">
+          <h3 className="section-title">Cosmetics preview</h3>
+          <p className="dim small">
+            Try the Chaos+ skins, themes and trials for free while purchases are unavailable. This is a demo preview: it is not a
+            purchase and it does not remove ads.
+          </p>
+          <button type="button" className="btn btn-small" onClick={() => props.onPreviewCosmetics(!p.premiumDemo)}>
+            {p.premiumDemo ? 'Turn off cosmetics preview' : 'Preview cosmetics (demo)'}
+          </button>
+          {p.premiumDemo && (
             <div className="trial-list">
               {TRIALS.map((t, i) => (
                 <div key={t.name} className="trial" style={{ '--lvl': rgb(t.accent) } as CSSProperties}>
@@ -437,34 +541,9 @@ export function PremiumScreen(props: { progress: Progress; onUnlock: () => void;
                 </div>
               ))}
             </div>
-            <button type="button" className="link-btn" onClick={props.onRemove}>
-              Remove demo unlock
-            </button>
-          </section>
-        ) : (
-          <section className="plus-buy">
-            <p className="plus-price">
-              ₹99 <span className="dim">one-time</span>
-            </p>
-            <button type="button" className="play-now play-now-plus" onClick={() => setCheckout(true)}>
-              <span className="play-now-label">Unlock Chaos+</span>
-              <span className="play-now-sub">Demo checkout · no real payment</span>
-            </button>
-            <p className="dim small">Every level, mode and daily challenge remains free. Chaos+ never affects difficulty or scores.</p>
-          </section>
-        )}
+          )}
+        </section>
       </div>
-      {checkout && (
-        <DemoCheckout
-          item="Chaos+ (one-time)"
-          price="₹99"
-          onConfirm={() => {
-            setCheckout(false);
-            props.onUnlock();
-          }}
-          onCancel={() => setCheckout(false)}
-        />
-      )}
     </div>
   );
 }

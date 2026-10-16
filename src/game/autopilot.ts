@@ -55,10 +55,8 @@ export function createAutopilot(opts: AutopilotOptions = {}): (g: GameState) => 
     }
 
     // Chase the nearest orb, or drift back towards the middle.
-    const orb = g.orbs.reduce<(typeof g.orbs)[number] | null>(
-      (best, o) => (!best || Math.hypot(o.x - p.x, o.y - p.y) < Math.hypot(best.x - p.x, best.y - p.y) ? o : best),
-      null,
-    );
+    const cost = (o: (typeof g.orbs)[number]) => Math.hypot(o.x - p.x, o.y - p.y) * (o.bonus ? 0.6 : 1);
+    const orb = g.orbs.reduce<(typeof g.orbs)[number] | null>((best, o) => (!best || cost(o) < cost(best) ? o : best), null);
     if (orb) push(orb.x - p.x, orb.y - p.y, 1.3);
     else push(ARENA / 2 - p.x, ARENA / 2 - p.y, Math.min(1, Math.hypot(ARENA / 2 - p.x, ARENA / 2 - p.y) / 400) * 0.6);
 
@@ -105,14 +103,21 @@ export function createAutopilot(opts: AutopilotOptions = {}): (g: GameState) => 
       const d = Math.hypot(dx, dy) || 1;
       if (d < b.r + 130) push(dx, dy, 2.5);
       const a = b.attack;
-      if (a?.kind === 'beam') {
+      if (a?.kind === 'beam' || a?.kind === 'twin') {
         const theta = Math.atan2(dy, dx);
-        const behind = wrap(theta - a.angle) * a.spin; // > 0: beam is coming round towards us
-        if (behind > -0.2 && behind < 1.8) {
-          x += (-dy / d) * a.spin * 2.5;
-          y += (dx / d) * a.spin * 2.5;
-          if (d > 260) push(-dx, -dy, 0.8); // tighter circles are quicker to run
+        for (const angle of a.kind === 'twin' ? [a.angle, a.angle + Math.PI] : [a.angle]) {
+          const behind = wrap(theta - angle) * a.spin; // > 0: a beam is coming round towards us
+          if (behind > -0.2 && behind < 1.8) {
+            x += (-dy / d) * a.spin * 2.5;
+            y += (dx / d) * a.spin * 2.5;
+            if (d > 260) push(-dx, -dy, 0.8); // tighter circles are quicker to run
+          }
         }
+      } else if (a?.kind === 'nova' && a.radius < d + 40) {
+        // Line up with the gap in the shockwave before it reaches us.
+        const tx = b.x + Math.cos(a.angle) * d;
+        const ty = b.y + Math.sin(a.angle) * d;
+        push(tx - p.x, ty - p.y, 3 * Math.min(1, Math.hypot(tx - p.x, ty - p.y) / 60));
       } else if (a?.kind === 'burst' && a.phase === 'tell') {
         const gapAngle = a.angle + (1.5 / 16) * Math.PI * 2;
         push(b.x + Math.cos(gapAngle) * 280 - p.x, b.y + Math.sin(gapAngle) * 280 - p.y, 1.6);

@@ -2,11 +2,12 @@
 // Everything is cosmetic or bragging rights; nothing changes gameplay power.
 
 import { CHAOS_KINDS, type ChaosKind, type GameMode } from './game/engine';
-import { STAGES, TRIALS, starsFor } from './game/stages';
+import { ENDLESS_MODES, STAGES, TRIALS, starsFor, type EndlessId } from './game/stages';
 import { BEST_KEY, loadBest, type KeyValueStore } from './storage';
 
 export const PROGRESS_KEY = 'chaos-theory.progress.v1';
 const LEVELS_VERSION = 2; // bumped when the level list changes, so old level records are not misapplied
+export const SAVE_VERSION = 3; // overall save structure version (3: per-mode Endless bests)
 
 export type ShapeId = 'square' | 'diamond' | 'triangle' | 'circle' | 'hexagon' | 'star' | 'nova' | 'spark';
 export type ThemeId = 'obsidian' | 'ember' | 'glacier' | 'verdant' | 'aurum' | 'synthwave' | 'aurora';
@@ -31,8 +32,24 @@ export interface RecordEntry {
   date: string; // ISO date
 }
 
+/** Personal bests for one Endless mode. Every field only ever goes up. */
+export interface ModeBest {
+  score: number;
+  time: number;
+  orbs: number;
+  events: number;
+  bosses: number;
+}
+
+const emptyBest = (): ModeBest => ({ score: 0, time: 0, orbs: 0, events: 0, bosses: 0 });
+
+export const isEndlessMode = (mode: GameMode): mode is EndlessId =>
+  mode === 'endless' || mode === 'orbrush' || mode === 'chaos' || mode === 'bossrush';
+
 export interface Progress {
+  saveVersion: number;
   levelsVersion: number;
+  modeBests: Record<EndlessId, ModeBest>;
   stages: Record<number, { stars: number; best: number }>; // cleared levels only
   stageTime: Record<number, number>; // longest survival per level, cleared or not
   fails: Record<number, number>; // failed attempts since the last clear, per level
@@ -62,6 +79,8 @@ export interface RunSummary {
   peakMultiplier: number;
   chaosSurvived: ChaosKind[];
   orbs?: number;
+  events?: number;
+  bosses?: number;
   label?: string;
   dateKey?: string;
 }
@@ -80,13 +99,20 @@ export interface RunOutcome {
   stars: number;
   previousStars: number;
   firstClear: boolean;
+  newBests: (keyof ModeBest)[]; // Endless modes: which personal bests this run improved
   newAchievements: Achievement[];
   newUnlocks: Unlock[];
 }
 
+function defaultModeBests(): Record<EndlessId, ModeBest> {
+  return Object.fromEntries(ENDLESS_MODES.map((m) => [m.id, emptyBest()])) as Record<EndlessId, ModeBest>;
+}
+
 export function defaultProgress(): Progress {
   return {
+    saveVersion: SAVE_VERSION,
     levelsVersion: LEVELS_VERSION,
+    modeBests: defaultModeBests(),
     stages: {},
     stageTime: {},
     fails: {},
@@ -152,6 +178,10 @@ export const ACHIEVEMENTS: readonly Achievement[] = [
   { id: 'orbs-50', name: 'Collector', desc: 'Collect 50 orbs in total', test: (p) => p.orbsTotal >= 50 },
   { id: 'chaos-all', name: 'Chaos Theorist', desc: 'Survive all nine chaos events', test: (p) => CHAOS_KINDS.every((k) => p.chaosSurvived.includes(k)) },
   { id: 'daily', name: 'Daily Ritual', desc: 'Play a daily challenge', test: (p) => p.dailyPlays >= 1 },
+  { id: 'classic-120', name: 'Two Minutes', desc: 'Survive 2 minutes in Classic Survival', test: (_, r) => r.mode === 'endless' && r.time >= 120 },
+  { id: 'orbrush-30', name: 'Orb Glutton', desc: 'Collect 30 orbs in one Orb Rush run', test: (_, r) => r.mode === 'orbrush' && (r.orbs ?? 0) >= 30 },
+  { id: 'chaos-10', name: 'Unfazed', desc: 'Survive 10 events in one Chaos Survival run', test: (_, r) => r.mode === 'chaos' && (r.events ?? 0) >= 10 },
+  { id: 'bossrush-3', name: 'Core Collector', desc: 'Defeat 3 bosses in one Boss Rush run', test: (_, r) => r.mode === 'bossrush' && (r.bosses ?? 0) >= 3 },
   { id: 'runs-25', name: 'Relentless', desc: 'Play 25 runs', test: (p) => p.runs >= 25 },
 ];
 
@@ -241,8 +271,23 @@ export function applyRun(prev: Progress, run: RunSummary): RunOutcome {
   let stars = 0;
   let previousStars = 0;
   let firstClear = false;
+  const newBests: (keyof ModeBest)[] = [];
 
-  if (run.mode === 'stage') {
+  if (isEndlessMode(run.mode)) {
+    const prevBest = { ...emptyBest(), ...(p.modeBests[run.mode] ?? {}) };
+    const now: ModeBest = { score: run.score, time: run.time, orbs: run.orbs ?? 0, events: run.events ?? 0, bosses: run.bosses ?? 0 };
+    const next = { ...prevBest };
+    for (const k of Object.keys(now) as (keyof ModeBest)[]) {
+      if (now[k] > prevBest[k]) {
+        next[k] = now[k]; // a lower result never overwrites a higher best
+        if (now[k] > 0) newBests.push(k);
+      }
+    }
+    p.modeBests = { ...p.modeBests, [run.mode]: next };
+    previousBest = prevBest.score;
+    best = next.score;
+    if (run.mode === 'endless') p.endlessBest = Math.max(p.endlessBest, next.score);
+  } else if (run.mode === 'stage') {
     const rec = p.stages[run.stage];
     previousStars = rec?.stars ?? 0;
     previousBest = rec?.best ?? 0;
@@ -256,10 +301,6 @@ export function applyRun(prev: Progress, run: RunSummary): RunOutcome {
       p.fails[run.stage] = (p.fails[run.stage] ?? 0) + 1;
     }
     best = p.stages[run.stage]?.best ?? 0;
-  } else if (run.mode === 'endless') {
-    previousBest = p.endlessBest;
-    p.endlessBest = Math.max(p.endlessBest, run.score);
-    best = p.endlessBest;
   } else if (run.mode === 'trial') {
     previousBest = p.trialBest[run.stage] ?? 0;
     p.trialBest[run.stage] = Math.max(previousBest, run.score);
@@ -282,6 +323,7 @@ export function applyRun(prev: Progress, run: RunSummary): RunOutcome {
     stars,
     previousStars,
     firstClear,
+    newBests,
     newAchievements,
     newUnlocks: diffUnlocks(before, p),
   };
@@ -348,7 +390,15 @@ export function loadProgress(storage: KeyValueStore | null = browserStorage()): 
     const raw = storage?.getItem(PROGRESS_KEY);
     if (raw) {
       const saved = JSON.parse(raw) as Partial<Progress>;
-      const merged: Progress = { ...base, ...saved, settings: { ...base.settings, ...(saved.settings ?? {}) } };
+      const merged: Progress = {
+        ...base,
+        ...saved,
+        settings: { ...base.settings, ...(saved.settings ?? {}) },
+        modeBests: { ...base.modeBests, ...(saved.modeBests ?? {}) },
+        saveVersion: SAVE_VERSION,
+      };
+      // Saves from before per-mode bests: carry the Classic best score over.
+      merged.modeBests.endless = { ...emptyBest(), ...merged.modeBests.endless, score: Math.max(merged.modeBests.endless?.score ?? 0, merged.endlessBest) };
       if (saved.levelsVersion !== LEVELS_VERSION) {
         // The level list changed: old per-level records refer to different levels.
         merged.levelsVersion = LEVELS_VERSION;
@@ -364,6 +414,7 @@ export function loadProgress(storage: KeyValueStore | null = browserStorage()): 
   }
   // First load on this version: carry over the personal best from v1 of the game.
   base.endlessBest = loadBest(storage);
+  base.modeBests.endless.score = base.endlessBest;
   return base;
 }
 

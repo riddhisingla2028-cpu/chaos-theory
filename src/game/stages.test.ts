@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createGame, step } from './engine';
+import { configForPhase, createGame, step } from './engine';
 import { createAutopilot } from './autopilot';
-import { MUTATORS, STAGES, TRIALS, dailyChallenge, dailyKey, objectiveText, stageConfig, starThresholds, starsFor, trialConfig } from './stages';
+import { ENDLESS_MODES, MUTATORS, STAGES, TRIALS, dailyChallenge, dailyKey, objectiveText, stageConfig, starThresholds, starsFor, trialConfig } from './stages';
 
 describe('level definitions', () => {
   it('has exactly the 10 designed levels, in order', () => {
@@ -21,15 +21,15 @@ describe('level definitions', () => {
 
   it('matches the specified objectives', () => {
     expect(STAGES.map((s) => objectiveText(s.objective))).toEqual([
-      'Survive 5s',
-      'Survive 8s',
-      'Collect 3 orbs',
-      'Survive 8s',
-      'Survive 10s',
-      'Collect 5 orbs',
-      'Survive 10s',
-      'Survive 12s',
-      'Collect 7 orbs in 15s',
+      'Survive 15s',
+      'Survive 24s',
+      'Collect 10 orbs',
+      'Survive 24s',
+      'Survive 28s',
+      'Collect 12 orbs',
+      'Survive 28s',
+      'Survive 30s',
+      'Collect 15 orbs in 50s',
       'Defeat the Core',
     ]);
   });
@@ -44,15 +44,17 @@ describe('level definitions', () => {
   });
 
   it('each level config switches on its signature mechanic', () => {
-    expect(stageConfig(1).hazardSpeed).toBeGreaterThan(1);
+    const last = (i: number) => configForPhase(stageConfig(i), 3);
+    expect(last(1).hazardSpeed).toBeGreaterThan(1.3);
     expect(stageConfig(2).objective?.type).toBe('orbs');
-    expect(stageConfig(3).events.map((e) => e.kind)).toEqual(['INVERSION']);
+    expect(last(3).events.map((e) => e.kind)).toEqual(['INVERSION']);
     expect(stageConfig(4).voids).toBe(true);
-    expect(stageConfig(5).pairs.length).toBeGreaterThan(0);
-    expect(stageConfig(6).teleport).toBe(true);
-    expect(stageConfig(7).shrink).not.toBeNull();
-    expect(stageConfig(8).pairChance).toBeGreaterThan(0);
+    expect(last(5).pairs.length).toBeGreaterThan(0);
+    expect(last(6).teleport).toBe(true);
+    expect(last(7).shrink).not.toBeNull();
+    expect(last(8).pairChance).toBeGreaterThan(0);
     expect(stageConfig(9).boss).not.toBeNull();
+    expect(last(9).bossTier).toBe(3);
   });
 
   it('awards 1 to 3 stars by score', () => {
@@ -73,6 +75,24 @@ describe('level definitions', () => {
         if (g.status === 'won') wins++;
       }
       expect(wins, `${cfg.mode} ${cfg.stage}`).toBe(1);
+    }
+  });
+});
+
+describe('Endless modes are genuinely playable', () => {
+  it('the autopilot survives a while in every mode and beats at least one Boss Rush boss', () => {
+    for (const m of ENDLESS_MODES) {
+      let best = 0;
+      let bosses = 0;
+      for (let seed = 1; seed <= 12; seed++) {
+        const g = createGame(seed * 104729, m.config);
+        const pilot = createAutopilot();
+        while (g.status === 'playing' && g.time < 90) step(g, pilot(g), 1 / 120);
+        best = Math.max(best, g.time);
+        bosses = Math.max(bosses, g.stats.bosses);
+      }
+      expect(best, m.name).toBeGreaterThan(25);
+      if (m.id === 'bossrush') expect(bosses).toBeGreaterThanOrEqual(1);
     }
   });
 });

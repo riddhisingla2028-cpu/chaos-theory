@@ -4,6 +4,9 @@ import {
   ARENA,
   BEAM_HALF,
   COLLAPSE_INSET,
+  NOVA_GAP,
+  NOVA_HALF,
+  nextBossSpot,
   ORB_RADIUS,
   PLAYER_HALF,
   SWEEP_GAP_HALF,
@@ -236,21 +239,31 @@ function drawVoids(ctx: CanvasRenderingContext2D, s: GameState, t: number): void
 function drawOrbs(ctx: CanvasRenderingContext2D, s: GameState, t: number): void {
   for (const o of s.orbs) {
     const pop = Math.min(1, o.age * 4);
-    const pulse = 1 + Math.sin(t * 6 + o.id) * 0.12;
-    const r = ORB_RADIUS * pop * pulse;
+    const pulse = 1 + Math.sin(t * (o.bonus ? 10 : 6) + o.id) * 0.12;
+    const r = ORB_RADIUS * pop * pulse * (o.bonus ? 1.15 : 1);
+    const col = o.bonus ? (a: number) => `rgba(255, 213, 74, ${a})` : neon;
     ctx.save();
     ctx.translate(o.x, o.y);
+    if (o.bonus) {
+      // Countdown ring: gold orbs vanish after five seconds.
+      const left = Math.max(0, 1 - o.age / 5);
+      ctx.strokeStyle = col(0.9);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 2, -Math.PI / 2, -Math.PI / 2 + left * Math.PI * 2);
+      ctx.stroke();
+    }
     // Halo
     const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 3.2);
-    halo.addColorStop(0, neon(0.35));
-    halo.addColorStop(1, neon(0));
+    halo.addColorStop(0, col(0.35));
+    halo.addColorStop(1, col(0));
     ctx.fillStyle = halo;
     ctx.fillRect(-r * 3.2, -r * 3.2, r * 6.4, r * 6.4);
     // Diamond core
     ctx.rotate(t * 1.5);
-    ctx.shadowColor = neon(1);
+    ctx.shadowColor = col(1);
     ctx.shadowBlur = 20;
-    ctx.fillStyle = neon(0.95);
+    ctx.fillStyle = col(0.95);
     ctx.beginPath();
     ctx.moveTo(0, -r);
     ctx.lineTo(r * 0.8, 0);
@@ -271,6 +284,58 @@ function drawBoss(ctx: CanvasRenderingContext2D, s: GameState, t: number, px: nu
   if (!b) return;
   const a = b.attack;
 
+  if (b.hp <= 0 && s.config.bossRush && s.bossRespawn < 1.2) {
+    // Boss Rush: the next Core is about to materialise.
+    const k = 1 - Math.max(0, s.bossRespawn) / 1.2;
+    ctx.save();
+    ctx.strokeStyle = acc(0.3 + 0.5 * Math.abs(Math.sin(t * 12)));
+    ctx.lineWidth = 3;
+    ctx.setLineDash([12, 10]);
+    const at = nextBossSpot(s);
+    ctx.beginPath();
+    ctx.arc(at.x, at.y, b.r + 140 * (1 - k), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  if (a?.kind === 'nova') {
+    // Shockwave: a ring with one safe gap, marked in the level colour.
+    const g0 = a.angle - NOVA_GAP;
+    const g1 = a.angle + NOVA_GAP;
+    ctx.save();
+    if (a.phase === 'tell') {
+      ctx.strokeStyle = acc(0.45 + 0.4 * Math.sin(t * 18));
+      ctx.lineWidth = 5;
+      ctx.setLineDash([10, 8]);
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r + 70, g1, g0 + Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // An arrow out through the gap.
+      ctx.strokeStyle = neon(0.95);
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(b.x + Math.cos(a.angle) * (b.r + 40), b.y + Math.sin(a.angle) * (b.r + 40));
+      ctx.lineTo(b.x + Math.cos(a.angle) * (b.r + 160), b.y + Math.sin(a.angle) * (b.r + 160));
+      ctx.stroke();
+    } else {
+      ctx.shadowColor = acc(1);
+      ctx.shadowBlur = 24;
+      ctx.strokeStyle = acc(0.95);
+      ctx.lineWidth = NOVA_HALF * 2;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, a.radius, g1, g0 + Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = neon(0.9);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, a.radius, g0, g1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   // Telegraphs and beams sit under the core.
   if (a?.kind === 'burst' && a.phase === 'tell') {
     const gapStart = a.angle;
@@ -287,13 +352,13 @@ function drawBoss(ctx: CanvasRenderingContext2D, s: GameState, t: number, px: nu
     ctx.arc(b.x, b.y, b.r + 40, gapStart, gapEnd);
     ctx.stroke();
   }
-  if (a?.kind === 'beam') {
+  for (const angle of a?.kind === 'beam' ? [a.angle] : a?.kind === 'twin' ? [a.angle, a.angle + Math.PI] : []) {
     const len = ARENA * 1.5;
-    const ex = b.x + Math.cos(a.angle) * len;
-    const ey = b.y + Math.sin(a.angle) * len;
+    const ex = b.x + Math.cos(angle) * len;
+    const ey = b.y + Math.sin(angle) * len;
     ctx.save();
     ctx.lineCap = 'round';
-    if (a.phase === 'tell') {
+    if (a!.phase === 'tell') {
       ctx.setLineDash([18, 14]);
       ctx.strokeStyle = acc(0.45 + 0.35 * Math.sin(t * 18));
       ctx.lineWidth = 4;
@@ -307,7 +372,7 @@ function drawBoss(ctx: CanvasRenderingContext2D, s: GameState, t: number, px: nu
     ctx.moveTo(b.x, b.y);
     ctx.lineTo(ex, ey);
     ctx.stroke();
-    if (a.phase === 'fire') {
+    if (a!.phase === 'fire') {
       ctx.strokeStyle = 'rgba(255,255,255,0.85)';
       ctx.lineWidth = 4;
       ctx.shadowBlur = 0;
@@ -322,6 +387,14 @@ function drawBoss(ctx: CanvasRenderingContext2D, s: GameState, t: number, px: nu
   if (b.hp <= 0) return;
   ctx.save();
   ctx.translate(b.x, b.y);
+  if (b.shield > 0) {
+    // Phase-change shield: the Core is regrouping and cannot be hit or attack.
+    ctx.strokeStyle = neon(0.4 + 0.4 * Math.sin(t * 14));
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, b.r + 62, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   // Rotating outer rings
   for (let i = 0; i < 3; i++) {
     ctx.save();
@@ -582,6 +655,15 @@ function drawHazards(ctx: CanvasRenderingContext2D, s: GameState, t: number): vo
       ctx.arc(h.x, h.y, h.r, 0, Math.PI * 2);
       ctx.fillStyle = acc(0.92 * fading);
       ctx.fill();
+      if (h.weave) {
+        // Weavers wear a wobbling outer ring so their side-to-side motion is expected.
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = acc(0.55 * fading);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(h.x, h.y, h.r + 7, h.r + 3 + Math.abs(Math.sin(h.age * 2.6)) * 5, Math.atan2(h.vy, h.vx), 0, Math.PI * 2);
+        ctx.stroke();
+      }
       ctx.restore();
     } else {
       const alpha = Math.min(1, h.life - h.age, h.age * 3) * fading;

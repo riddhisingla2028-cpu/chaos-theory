@@ -7,6 +7,11 @@ import {
   COMBO_WINDOW,
   BOSS_RADIUS,
   ENDLESS_CONFIG,
+  NOVA_GAP,
+  bossAttacks,
+  bossRushHp,
+  configForPhase,
+  novaHits,
   TELEPORT_TELL,
   VOID_TILE,
   WARMUP,
@@ -25,7 +30,7 @@ import {
   type Hazard,
   type Vec,
 } from './engine';
-import { stageConfig } from './stages';
+import { ENDLESS_MODES, endlessMode, stageConfig } from './stages';
 import type { GameConfig } from './engine';
 
 const DT = 1 / 120;
@@ -387,18 +392,28 @@ describe('stages', () => {
     expect(g.events.some((e) => e.type === 'chaosWarning')).toBe(false);
   });
 
-  it('Reverse Control flips the controls soon after its short warm-up', () => {
+  it('Reverse Control starts with normal controls, then flips in its second phase', () => {
     const g = createGame(1, stageConfig(3));
     g.spawnTimer = Infinity;
     startOffCentre(g);
-    run(g, 1.55, circle);
+    run(g, 4.9, circle);
+    expect(g.chaos).toBeNull();
+    run(g, 2.6, circle);
+    expect(g.phase).toBe(1);
     expect(g.chaos?.kind).toBe('INVERSION');
   });
 
-  it('surviving the goal time wins the stage', () => {
+  it('surviving the goal time completes the level, then celebrates before winning', () => {
     const g = createGame(1, stageConfig(0));
     g.spawnTimer = Infinity;
-    run(g, 21);
+    g.patternTimer = Infinity;
+    for (let i = 0; i < 151; i++) {
+      run(g, 0.1);
+      g.hazards = []; // phase formations would otherwise hit a player standing still
+    }
+    expect(g.events.some((e) => e.type === 'objectiveComplete')).toBe(true);
+    expect(g.status).toBe('playing'); // celebration running
+    run(g, 1.5);
     expect(g.status).toBe('won');
     expect(g.events.some((e) => e.type === 'victory')).toBe(true);
   });
@@ -556,13 +571,14 @@ describe('orbs and objectives', () => {
     step(g, NONE, DT);
     expect(g.stats.orbs).toBe(1);
     expect(g.score - before).toBeGreaterThan(40);
-    expect(g.events.some((e) => e.type === 'orb' && e.collected === 1 && e.target === 3)).toBe(true);
+    expect(g.events.some((e) => e.type === 'orb' && e.collected === 1 && e.target === 10)).toBe(true);
   });
 
   it('collecting the target number of orbs wins the level', () => {
     const g = quietLevel(2);
-    for (let i = 0; i < 200 && g.status === 'playing'; i++) {
+    for (let i = 0; i < 400 && g.status === 'playing'; i++) {
       run(g, 0.4);
+      g.hazards = [];
       const o = g.orbs[0];
       if (o) {
         g.player.x = o.x;
@@ -570,12 +586,14 @@ describe('orbs and objectives', () => {
       }
     }
     expect(g.status).toBe('won');
-    expect(g.stats.orbs).toBe(3);
+    expect(g.stats.orbs).toBe(10);
+    expect(g.phase).toBe(3); // passed through every phase
   });
 
   it('a time-limited orb objective fails when time runs out', () => {
     const g = quietLevel(8);
-    run(g, 15.1);
+    run(g, 50.1, () => NONE);
+    g.hazards = [];
     expect(g.status).toBe('over');
     expect(g.cause).toBe('timeout');
   });
@@ -610,8 +628,9 @@ describe('level mechanics', () => {
   it('the Shrinking Arena closes in steadily and kills a player at the edge', () => {
     const g = quietLevel(7);
     expect(shrinkInset(g)).toBe(0);
-    run(g, 6);
+    run(g, 14);
     expect(g.status).toBe('playing');
+    expect(g.phase).toBe(1);
     expect(g.inset).toBeGreaterThan(100);
     g.player.x = 40;
     step(g, NONE, DT);
@@ -645,6 +664,7 @@ describe('level mechanics', () => {
 
   it('Glitch Attack teleports hazards with a warning ghost, intangible mid-jump', () => {
     const g = quietLevel(6);
+    g.config = { ...g.config, teleport: true }; // teleports arrive in the level's second phase
     startChaos(g, 'GLITCH', 'active');
     for (let i = 0; i < 12; i++) g.hazards.push(hazard({ id: 100 + i, x: 100 + i * 60, y: 900, vx: 30 }));
     run(g, 0.72);
@@ -690,7 +710,7 @@ describe('Final Showdown boss', () => {
   it('a burst always leaves a gap', () => {
     const g = quietLevel(9);
     g.time = g.config.warmup + 1; // the Core is idle during the warm-up
-    g.boss!.attack = { kind: 'burst', phase: 'tell', timer: 0.001, angle: 0, spin: 1 };
+    g.boss!.attack = { kind: 'burst', phase: 'tell', timer: 0.001, angle: 0, spin: 1, radius: 0 };
     g.player.y = 950;
     step(g, NONE, DT);
     const n = g.hazards.length;
@@ -701,7 +721,7 @@ describe('Final Showdown boss', () => {
   it('the beam kills whatever it sweeps over', () => {
     const g = quietLevel(9);
     const b = g.boss!;
-    b.attack = { kind: 'beam', phase: 'fire', timer: 3, angle: Math.PI / 2, spin: 1 };
+    b.attack = { kind: 'beam', phase: 'fire', timer: 3, angle: Math.PI / 2, spin: 1, radius: 0 };
     expect(beamHits(b, b.x, b.y + 300, 10)).toBe(true);
     expect(beamHits(b, b.x + 300, b.y, 10)).toBe(false);
   });
@@ -709,8 +729,10 @@ describe('Final Showdown boss', () => {
   it('each orb damages the Core, and breaking it wins', () => {
     const g = quietLevel(9);
     g.boss!.cooldown = Infinity;
-    for (let i = 0; i < 300 && g.status === 'playing'; i++) {
+    for (let i = 0; i < 600 && g.status === 'playing'; i++) {
       run(g, 0.4);
+      g.hazards = [];
+      if (g.boss!.attack) g.boss!.attack = null;
       const o = g.orbs[0];
       if (o) {
         g.player.x = o.x;
@@ -719,7 +741,190 @@ describe('Final Showdown boss', () => {
     }
     expect(g.status).toBe('won');
     expect(g.boss!.hp).toBe(0);
-    expect(g.events.filter((e) => e.type === 'bossHit')).toHaveLength(5);
+    expect(g.events.filter((e) => e.type === 'bossHit')).toHaveLength(10);
     expect(g.events.some((e) => e.type === 'bossDefeated')).toBe(true);
+  });
+});
+
+describe('level phases', () => {
+  it('Beginner moves through four phases by time, firing its final-test wall', () => {
+    const g = quietLevel(0);
+    const phases: number[] = [];
+    for (let t = 0; t < 14; t += 0.1) {
+      run(g, 0.1);
+      g.hazards = []; // this test checks phase timing, not dodging
+      phases.push(g.phase);
+    }
+    expect(Math.max(...phases)).toBe(3);
+    const names = g.events.filter((e) => e.type === 'phase').map((e) => (e as { name: string }).name);
+    expect(names).toEqual(['Hazards arrive', 'Crossfire', 'Final test']);
+    expect(g.events.some((e) => e.type === 'pattern' && e.kind === 'wall')).toBe(true);
+  });
+
+  it('phase settings stack on top of each other', () => {
+    const base = stageConfig(1);
+    expect(configForPhase(base, 0).hazardSpeed).toBeCloseTo(1.15);
+    expect(configForPhase(base, 2).hazardSpeed).toBeGreaterThan(configForPhase(base, 1).hazardSpeed);
+    expect(configForPhase(base, 2).patterns.map((p) => p.kind)).toEqual(['rain']);
+    expect(configForPhase(base, 3).patterns.map((p) => p.kind)).toEqual(['rain']); // kept from phase 2
+  });
+
+  it('orb levels advance phases as orbs are collected', () => {
+    const g = quietLevel(2);
+    g.stats.orbs = 3;
+    step(g, NONE, DT);
+    expect(g.phase).toBe(1);
+    expect(g.config.orbMinDistance).toBe(320);
+  });
+
+  it('every level is at least twice as long or demanding as before', () => {
+    const before = [5, 8, 3, 8, 10, 5, 10, 12, 7, 5];
+    for (let i = 0; i < 10; i++) {
+      const o = stageConfig(i).objective!;
+      const amount = o.type === 'survive' ? o.seconds! : o.type === 'orbs' ? o.orbs! : stageConfig(i).boss!.hp;
+      expect(amount, `level ${i + 1}`).toBeGreaterThanOrEqual(before[i] * 2);
+      expect(stageConfig(i).phases.length, `level ${i + 1}`).toBe(4);
+    }
+  });
+
+  it('the player cannot be hurt during the completion celebration', () => {
+    const g = quietLevel(0);
+    g.time = 14.995;
+    step(g, NONE, DT);
+    expect(g.finishing).toBeGreaterThan(0);
+    g.hazards.push(hazard({ x: g.player.x, y: g.player.y }));
+    run(g, 0.5);
+    expect(g.status).toBe('playing');
+  });
+});
+
+describe('boss phases and attacks', () => {
+  it('the Final Showdown escalates through tiers as the Core is damaged, with a shield between phases', () => {
+    const g = quietLevel(9);
+    g.time = 5;
+    g.hazards.push(hazard({ x: 100, y: 100 }));
+    g.boss!.hp = 7;
+    step(g, NONE, DT);
+    expect(g.phase).toBe(1);
+    expect(g.boss!.tier).toBe(1);
+    expect(g.boss!.shield).toBeGreaterThan(1);
+    expect(g.hazards).toHaveLength(0); // board cleared for the transition
+    g.boss!.hp = 2;
+    step(g, NONE, DT);
+    expect(g.phase).toBe(3);
+    expect(g.boss!.tier).toBe(3);
+  });
+
+  it('higher tiers unlock beams, shockwaves and twin beams', () => {
+    expect(bossAttacks(0)).toEqual(['burst', 'summon']);
+    expect(bossAttacks(1)).toContain('beam');
+    expect(bossAttacks(2)).toContain('nova');
+    expect(bossAttacks(3)).toContain('twin');
+  });
+
+  it('a shielded Core cannot be damaged', () => {
+    const g = quietLevel(9);
+    g.boss!.shield = 1;
+    g.orbs = [{ id: 1, x: g.player.x, y: g.player.y, age: 1, bonus: false }];
+    step(g, NONE, DT);
+    expect(g.stats.orbs).toBe(1);
+    expect(g.boss!.hp).toBe(10);
+  });
+
+  it('the shockwave kills on its ring but not in its gap', () => {
+    const g = quietLevel(9);
+    const b = g.boss!;
+    b.attack = { kind: 'nova', phase: 'fire', timer: Infinity, angle: 0, spin: 1, radius: 200 };
+    expect(novaHits(b, b.x, b.y + 200, 10)).toBe(true); // on the ring, outside the gap
+    expect(novaHits(b, b.x + 200, b.y, 10)).toBe(false); // in the gap (angle 0)
+    expect(novaHits(b, b.x + Math.cos(NOVA_GAP + 0.3) * 200, b.y + Math.sin(NOVA_GAP + 0.3) * 200, 10)).toBe(true);
+    expect(novaHits(b, b.x, b.y + 320, 10)).toBe(false); // ring has not reached it
+  });
+
+  it('twin beams cover both sides of the Core', () => {
+    const g = quietLevel(9);
+    const b = g.boss!;
+    b.attack = { kind: 'twin', phase: 'fire', timer: 3, angle: 0, spin: 1, radius: 0 };
+    expect(beamHits(b, b.x + 300, b.y, 10)).toBe(true);
+    expect(beamHits(b, b.x - 300, b.y, 10)).toBe(true);
+    expect(beamHits(b, b.x, b.y + 300, 10)).toBe(false);
+  });
+});
+
+describe('Endless modes', () => {
+  it('defines the four modes', () => {
+    expect(ENDLESS_MODES.map((m) => m.name)).toEqual(['Classic Survival', 'Orb Rush', 'Chaos Survival', 'Boss Rush']);
+    for (const m of ENDLESS_MODES) expect(m.config.objective).toBeNull(); // they end only when the player is caught
+  });
+
+  it('Classic Survival never ends on its own and ramps up', () => {
+    const g = createGame(3, endlessMode('endless').config);
+    g.spawnTimer = Infinity;
+    g.nextChaosIn = Infinity;
+    g.patternTimer = Infinity;
+    run(g, 70);
+    expect(g.status).toBe('playing');
+    expect(g.phase).toBe(2);
+    expect(g.config.weaveChance).toBeGreaterThan(0);
+  });
+
+  it('Orb Rush keeps two orbs out; gold orbs score more and expire', () => {
+    const g = createGame(9, endlessMode('orbrush').config);
+    g.spawnTimer = Infinity;
+    run(g, 1.5);
+    expect(g.orbs).toHaveLength(2);
+    g.orbs = [{ id: 50, x: 300, y: 300, age: 0, bonus: true }];
+    run(g, 5.2);
+    expect(g.orbs.some((o) => o.id === 50)).toBe(false); // expired
+    const before = g.score;
+    g.orbs = [{ id: 51, x: g.player.x, y: g.player.y, age: 0, bonus: true }];
+    step(g, NONE, DT);
+    expect(g.stats.bonusOrbs).toBe(1);
+    expect(g.score - before).toBeGreaterThan(140);
+  });
+
+  it('Chaos Survival draws from every rule and pairs them up as time goes on', () => {
+    const cfg = endlessMode('chaos').config;
+    expect(cfg.events).toHaveLength(9);
+    expect(configForPhase(cfg, 0).pairChance).toBe(0);
+    expect(configForPhase(cfg, 1).pairChance).toBeGreaterThan(0);
+    expect(configForPhase(cfg, 3).voids).toBe(true);
+    const kinds = new Set<string>();
+    for (let seed = 1; seed <= 30; seed++) {
+      const g = createGame(seed, cfg);
+      g.spawnTimer = Infinity;
+      startOffCentre(g);
+      run(g, 6.05, circle);
+      if (g.chaos) kinds.add(g.chaos.kind);
+    }
+    expect(kinds.size).toBeGreaterThan(4); // different sequences each run
+  });
+
+  it('Boss Rush spawns a tougher Core after each defeat, never on top of the player', () => {
+    const g = createGame(4, endlessMode('bossrush').config);
+    g.spawnTimer = Infinity;
+    g.time = 5;
+    g.player.x = ARENA / 2;
+    g.player.y = ARENA * 0.8;
+    g.boss!.hp = 1;
+    g.boss!.shield = 0;
+    g.orbs = [{ id: 1, x: g.player.x, y: g.player.y, age: 1, bonus: false }];
+    step(g, NONE, DT);
+    expect(g.stats.bosses).toBe(1);
+    expect(g.status).toBe('playing'); // no win in an endless mode
+    g.player.y = ARENA / 2 + 40; // stand where the next Core would appear
+    run(g, 3);
+    const b = g.boss!;
+    expect(b.hp).toBe(bossRushHp(1));
+    expect(b.tier).toBe(1);
+    expect(Math.hypot(b.x - g.player.x, b.y - g.player.y)).toBeGreaterThan(BOSS_RADIUS + 100);
+    expect(g.events.some((e) => e.type === 'bossSpawn')).toBe(true);
+  });
+
+  it('weaver hazards curve away from a straight line', () => {
+    const g = quietGame();
+    g.hazards.push(hazard({ x: 100, y: 500, vx: 150, weave: 100 }));
+    run(g, 0.6);
+    expect(Math.abs(g.hazards[0].y - 500)).toBeGreaterThan(20);
   });
 });

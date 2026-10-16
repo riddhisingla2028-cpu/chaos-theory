@@ -1,8 +1,8 @@
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import type { DeathCause, GameStats } from '../game/engine';
-import { STAGES, TRIALS, objectiveText, starThresholds } from '../game/stages';
-import { SKIP_AFTER_FAILS, nextUnlockHint, type Progress, type RunOutcome, type RunSummary } from '../progress';
-import { DemoCheckout } from './Lobby';
+import { STAGES, TRIALS, endlessMode, objectiveText, starThresholds } from '../game/stages';
+import { SKIP_AFTER_FAILS, isEndlessMode, nextUnlockHint, type ModeBest, type Progress, type RunOutcome, type RunSummary } from '../progress';
+import { AdSlot } from './AdSlot';
 import { Overlay, Stars } from './common';
 
 export interface Result {
@@ -13,6 +13,7 @@ export interface Result {
   label: string;
   previousTime: number | null; // survival time of the previous attempt at the same mode/level
   boss: { hp: number; maxHp: number } | null;
+  phase: { index: number; count: number; name: string } | null;
 }
 
 const rgb = (c: [number, number, number]) => `rgb(${c.join(',')})`;
@@ -45,7 +46,26 @@ const CAUSE_TEXT: Record<DeathCause, string> = {
   timeout: 'Out of time',
   boss: 'Touched the Core',
   beam: 'Burned by the Core’s beam',
+  nova: 'Caught by the shockwave',
 };
+
+const BEST_LABEL: Record<keyof ModeBest, string> = { score: 'score', time: 'time', orbs: 'orb count', events: 'event count', bosses: 'boss streak' };
+
+/** The three headline numbers for an Endless run, with the matching personal best last. */
+function endlessTiles(summary: RunSummary, best: ModeBest): [string, string, boolean][] {
+  const sc = summary.score.toLocaleString();
+  const time = `${summary.time.toFixed(1)}s`;
+  switch (summary.mode) {
+    case 'orbrush':
+      return [['Orbs', String(summary.orbs ?? 0), true], ['Score', sc, false], ['Best orbs', String(best.orbs), false]];
+    case 'chaos':
+      return [['Score', sc, true], ['Events', String(summary.events ?? 0), false], ['Best score', best.score.toLocaleString(), false]];
+    case 'bossrush':
+      return [['Bosses', String(summary.bosses ?? 0), true], ['Score', sc, false], ['Best streak', String(best.bosses), false]];
+    default:
+      return [['Time', time, true], ['Score', sc, false], ['Best time', `${best.time.toFixed(1)}s`, false]];
+  }
+}
 
 function StatRow({ label, value }: { label: string; value: string }) {
   return (
@@ -129,15 +149,16 @@ export function GameOverScreen(props: {
   onRetry: () => void;
   onMenu: () => void;
   onLevels: () => void;
+  onModes: () => void;
   onSkip: () => void;
 }) {
+  if (isEndlessMode(props.result.summary.mode)) return <EndlessOverScreen {...props} />;
   const { summary, outcome, stats, previousTime } = props.result;
   const p = props.progress;
   const level = summary.mode === 'stage' ? STAGES[summary.stage] : null;
   const hint = nextUnlockHint(p);
   const delta = previousTime === null ? null : summary.time - previousTime;
   const progressInfo = objectiveProgress(props.result);
-  const [checkout, setCheckout] = useState(false);
   const accent = level?.accent ?? (summary.mode === 'trial' ? TRIALS[summary.stage].accent : null);
 
   let hook: ReactNode = null;
@@ -177,6 +198,11 @@ export function GameOverScreen(props: {
           <Tile label="Best" value={outcome.best ? outcome.best.toLocaleString() : '—'} />
         </div>
         {hook}
+        {props.result.phase && props.result.phase.count > 1 && (
+          <p className="phase-reached">
+            Reached phase <strong>{props.result.phase.index + 1}</strong> of {props.result.phase.count} · {props.result.phase.name}
+          </p>
+        )}
         {trend}
 
         <button type="button" className="btn btn-primary btn-retry" onClick={props.onRetry} autoFocus>
@@ -187,10 +213,11 @@ export function GameOverScreen(props: {
         {props.canSkip && (
           <div className="skip-offer">
             <p className="skip-text">
-              Stuck on {level?.name}? You have tried {fails} times. Every level can be beaten for free, but you can skip ahead.
+              Stuck on {level?.name}? You have tried {fails} times. You can skip ahead for free; a skipped level gives no stars, and you
+              can come back to clear it any time.
             </p>
-            <button type="button" className="btn btn-small" onClick={() => (p.premiumDemo ? props.onSkip() : setCheckout(true))}>
-              {p.premiumDemo ? 'Skip level (Chaos+)' : 'Skip level · demo purchase'}
+            <button type="button" className="btn btn-small" onClick={props.onSkip}>
+              Skip level (no stars)
             </button>
           </div>
         )}
@@ -219,18 +246,67 @@ export function GameOverScreen(props: {
             Menu
           </button>
         </div>
+        <AdSlot placement="results_banner" className="ad-results" />
       </div>
-      {checkout && (
-        <DemoCheckout
-          item={`Skip level ${summary.stage + 1}`}
-          price="₹19"
-          onConfirm={() => {
-            setCheckout(false);
-            props.onSkip();
-          }}
-          onCancel={() => setCheckout(false)}
-        />
-      )}
+    </Overlay>
+  );
+}
+
+function EndlessOverScreen(props: { result: Result; progress: Progress; isTouch: boolean; onRetry: () => void; onMenu: () => void; onModes: () => void }) {
+  const { summary, outcome, stats, previousTime } = props.result;
+  const id = summary.mode as Exclude<RunSummary['mode'], 'stage' | 'daily' | 'trial'>;
+  const mode = endlessMode(id);
+  const best = props.progress.modeBests[id];
+  const delta = previousTime === null ? null : summary.time - previousTime;
+  return (
+    <Overlay>
+      <div className="result" style={{ '--lvl': rgb(mode.accent) } as CSSProperties}>
+        <p className="kicker">{mode.name} · run over</p>
+        {props.result.cause && <p className="lede lede-tight cause">{CAUSE_TEXT[props.result.cause]}</p>}
+        <div className="tiles">
+          {endlessTiles(summary, best).map(([label, value, accent]) => (
+            <Tile key={label} label={label} value={value} accent={accent} />
+          ))}
+        </div>
+        {outcome.newBests.length > 0 ? (
+          <p className="badge">New best {outcome.newBests.map((k) => BEST_LABEL[k]).join(' · ')}</p>
+        ) : (
+          <p className="hook-text">
+            Best score <strong>{best.score.toLocaleString()}</strong> · longest run <strong>{best.time.toFixed(1)}s</strong>
+          </p>
+        )}
+        {props.result.phase && props.result.phase.count > 1 && (
+          <p className="phase-reached">
+            Reached stage <strong>{props.result.phase.index + 1}</strong> of {props.result.phase.count} · {props.result.phase.name}
+          </p>
+        )}
+        {delta !== null && delta > 0.05 && <p className="trend trend-up">+{delta.toFixed(1)}s longer than your last run</p>}
+
+        <button type="button" className="btn btn-primary btn-retry" onClick={props.onRetry} autoFocus>
+          <span>Restart</span>
+          <span className="btn-sub">{props.isTouch ? 'One tap. Fresh run' : 'Enter or R'}</span>
+        </button>
+
+        <Rewards outcome={outcome} />
+        <dl className="stats stats-compact">
+          <StatRow label="Survived" value={`${summary.time.toFixed(1)}s`} />
+          {id !== 'orbrush' && stats.orbs > 0 && <StatRow label="Orbs" value={String(stats.orbs)} />}
+          {stats.bonusOrbs > 0 && <StatRow label="Gold orbs" value={String(stats.bonusOrbs)} />}
+          {id !== 'chaos' && <StatRow label="Chaos survived" value={String(stats.eventsSurvived)} />}
+          <StatRow label="Near misses" value={String(stats.nearMisses)} />
+          <StatRow label="Peak multiplier" value={`×${stats.peakMultiplier.toFixed(1)}`} />
+          <StatRow label="Hazards dodged" value={String(stats.hazardsDodged)} />
+        </dl>
+        <div className="actions actions-quiet">
+          <button type="button" className="btn btn-small" onClick={props.onModes}>
+            Modes
+          </button>
+          <button type="button" className="btn btn-small" onClick={props.onMenu}>
+            Menu
+          </button>
+        </div>
+        <AdSlot placement="endless_results_banner" className="ad-results" />
+      </div>
     </Overlay>
   );
 }
@@ -289,6 +365,7 @@ export function VictoryScreen(props: { result: Result; isTouch: boolean; onNext:
           </button>
         </div>
         {!props.isTouch && <p className="hint">Enter to continue · R to replay</p>}
+        <AdSlot placement="results_banner" className="ad-results" />
       </div>
     </Overlay>
   );

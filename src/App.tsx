@@ -7,6 +7,8 @@ import {
   ENDLESS_CONFIG,
   ORB_POINTS,
   createGame,
+  difficulty,
+  effectiveTime,
   finalScore,
   goalSeconds,
   multiplier,
@@ -19,13 +21,14 @@ import {
 } from './game/engine';
 import { drawGame, type Look } from './game/render';
 import { Fx } from './game/fx';
-import { Sfx } from './game/audio';
+import { Sfx, type AudioState } from './game/audio';
 import { Input } from './game/input';
-import { STAGES, TRIALS, dailyChallenge, objectiveText, stageConfig, trialConfig, type Motif } from './game/stages';
+import { STAGES, TRIALS, dailyChallenge, endlessMode, objectiveText, stageConfig, trialConfig, type EndlessId, type Motif } from './game/stages';
 import {
   applyRun,
   canOfferSkip,
   defaultProgress,
+  isEndlessMode,
   loadProgress,
   nextStage,
   saveProgress,
@@ -36,16 +39,20 @@ import {
   type RunSummary,
   type Settings,
 } from './progress';
-import { IconButton, PauseIcon, PlayIcon, SoundIcon } from './ui/common';
+import { IconButton, PauseIcon, PlayIcon, SoundToggle } from './ui/common';
 import { Collection, SettingsScreen, Tutorial } from './ui/Menus';
 import { GameOverScreen, PausedScreen, VictoryScreen, type Result } from './ui/Results';
-import { HomeScreen, LevelMap, PremiumScreen, RecordsScreen, SplashScreen } from './ui/Lobby';
+import { HomeScreen, LevelMap, ModesScreen, PremiumScreen, RecordsScreen, SplashScreen } from './ui/Lobby';
 import { LobbyBackground } from './ui/LobbyBackground';
+import { AdsContext } from './ui/AdSlot';
+import { ADS_CONFIG, AdFrequency, maybeShowInterstitial } from './monetization/ads';
+import { resolvePremiumStatus, type PremiumStatus } from './monetization/entitlements';
 
 type Screen =
   | 'splash'
   | 'home'
   | 'levels'
+  | 'modes'
   | 'collection'
   | 'records'
   | 'settings'
@@ -56,7 +63,7 @@ type Screen =
   | 'over'
   | 'won';
 
-const LOBBY: ReadonlySet<Screen> = new Set(['splash', 'home', 'levels', 'collection', 'records', 'settings', 'premium', 'tutorial']);
+const LOBBY: ReadonlySet<Screen> = new Set(['splash', 'home', 'levels', 'modes', 'collection', 'records', 'settings', 'premium', 'tutorial']);
 
 type RGB = [number, number, number];
 const CYAN: RGB = [79, 227, 240];
@@ -83,7 +90,11 @@ interface Hud {
   playerNearTop: boolean; // fade the banner so it never hides the player
   warmup: number; // seconds of warm-up left
   orbs: number;
-  boss: { hp: number; maxHp: number } | null;
+  boss: { hp: number; maxHp: number; tier: number; shield: boolean } | null;
+  phase: { index: number; count: number; name: string };
+  threat: number; // difficulty level shown to the player
+  events: number;
+  bosses: number;
 }
 
 const JOY_RADIUS: Record<Settings['joySize'], number> = { S: 44, M: 56, L: 72 };
@@ -118,17 +129,20 @@ function makeTrialRun(i: number): Run {
   };
 }
 
-function makeEndlessRun(): Run {
+function makeModeRun(id: EndlessId): Run {
+  const m = endlessMode(id);
   return {
-    config: ENDLESS_CONFIG,
+    config: m.config,
     seed: Date.now(),
-    label: 'Endless',
-    motif: 'grid',
-    heat: 0.1,
-    glow: CYAN,
-    intro: { kicker: 'Endless', title: 'Survive', detail: 'New rules join the longer you last' },
+    label: m.name,
+    motif: m.motif,
+    heat: 0.2,
+    glow: m.accent,
+    intro: { kicker: 'Endless mode', title: m.name, detail: m.objective },
   };
 }
+
+const makeEndlessRun = () => makeModeRun('endless');
 
 function makeDailyRun(): Run {
   const d = dailyChallenge();
@@ -148,6 +162,7 @@ function freshRun(run: Run): Run {
   if (run.config.mode === 'stage') return makeStageRun(run.config.stage);
   if (run.config.mode === 'trial') return makeTrialRun(run.config.stage);
   if (run.config.mode === 'daily') return makeDailyRun();
+  if (isEndlessMode(run.config.mode)) return makeModeRun(run.config.mode);
   return makeEndlessRun();
 }
 
@@ -162,7 +177,11 @@ function hudFrom(g: GameState): Hud {
     playerNearTop: g.player.y < ARENA * 0.2,
     warmup: Math.max(0, g.config.warmup - g.time),
     orbs: g.stats.orbs,
-    boss: g.boss ? { hp: g.boss.hp, maxHp: g.boss.maxHp } : null,
+    boss: g.boss ? { hp: g.boss.hp, maxHp: g.boss.maxHp, tier: g.boss.tier, shield: g.boss.shield > 0 } : null,
+    phase: { index: g.phase, count: g.base.phases.length, name: g.base.phases[g.phase]?.name ?? '' },
+    threat: difficulty(effectiveTime(g)).level,
+    events: g.stats.eventsSurvived,
+    bosses: g.stats.bosses,
   };
 }
 
@@ -198,7 +217,10 @@ export default function App() {
   const [result, setResult] = useState<Result | null>(null);
   const [introKey, setIntroKey] = useState(0);
   const [levelsFocus, setLevelsFocus] = useState(() => Math.max(0, nextStage(loadProgress())));
+  const [modesFocus, setModesFocus] = useState<EndlessId>('endless');
+  const [phaseBanner, setPhaseBanner] = useState<{ key: number; name: string; hint: string; index: number; count: number } | null>(null);
   const [isTouch] = useState(() => matches('(pointer: coarse)'));
+  const isTouchRef = useRef(isTouch);
   const [reducedMotion] = useState(() => matches('(prefers-reduced-motion: reduce)'));
   const overAtRef = useRef(0);
   const multFloorRef = useRef(1);
@@ -216,15 +238,56 @@ export default function App() {
   // Development-only hook for automated browser tests; removed from production builds.
   useEffect(() => {
     if (import.meta.env.DEV) {
-      const w = window as unknown as { __chaosGame: () => GameState; __chaosProgress: () => Progress };
+      const w = window as unknown as { __chaosGame: () => GameState; __chaosProgress: () => Progress; __chaosAudio: () => { state: string; loops: number } };
       w.__chaosGame = () => gameRef.current;
       w.__chaosProgress = () => progressRef.current;
+      w.__chaosAudio = () => ({ state: sfxRef.current.audioState, loops: sfxRef.current.ambientLoops });
     }
   }, []);
 
+  // Entitlement is resolved once, centrally; ad slots read it through AdsContext.
+  const [premiumStatus, setPremiumStatus] = useState<PremiumStatus>('loading');
   useEffect(() => {
-    sfxRef.current.muted = settings.muted;
+    let live = true;
+    void resolvePremiumStatus().then((st) => live && setPremiumStatus(st));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const adFrequency = useRef(new AdFrequency(ADS_CONFIG.interstitial));
+  const premiumRef = useRef(premiumStatus);
+  premiumRef.current = premiumStatus;
+  const adsValue = useMemo(() => ({ config: ADS_CONFIG, premium: premiumStatus }), [premiumStatus]);
+
+  const [audioState, setAudioState] = useState<AudioState>('locked');
+  useEffect(() => sfxRef.current.subscribe(setAudioState), []);
+
+  useEffect(() => {
+    sfxRef.current.setMuted(settings.muted);
   }, [settings.muted]);
+
+  // Mobile browsers only allow audio to start inside a real gesture, and may suspend it later
+  // (backgrounding, calls, other apps). Every tap, click or key press retries until it runs.
+  useEffect(() => {
+    const sfx = sfxRef.current;
+    const onGesture = () => {
+      if (!progressRef.current.settings.muted && sfx.audioState !== 'running' && sfx.audioState !== 'unavailable') void sfx.unlock();
+    };
+    const onVisible = () => {
+      if (!document.hidden) sfx.resumeIfPossible();
+    };
+    const opts = { capture: true, passive: true } as const;
+    document.addEventListener('click', onGesture, opts);
+    document.addEventListener('touchend', onGesture, opts);
+    document.addEventListener('keydown', onGesture, opts);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      document.removeEventListener('click', onGesture, opts);
+      document.removeEventListener('touchend', onGesture, opts);
+      document.removeEventListener('keydown', onGesture, opts);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
 
   const updateProgress = useCallback((next: Progress) => {
     progressRef.current = next;
@@ -242,13 +305,16 @@ export default function App() {
 
   const toggleMute = useCallback(() => {
     const muted = !progressRef.current.settings.muted;
-    sfxRef.current.muted = muted;
+    const sfx = sfxRef.current;
+    sfx.setMuted(muted);
     changeSettings({ muted });
-    if (!muted) {
-      sfxRef.current.unlock();
-      sfxRef.current.play('click');
-    }
+    if (!muted) void sfx.unlock().then(() => sfx.play('click'));
   }, [changeSettings]);
+
+  const enableSound = useCallback(() => {
+    const sfx = sfxRef.current;
+    void sfx.unlock().then(() => sfx.play('click'));
+  }, []);
 
   const setScreen = useCallback((next: Screen) => {
     const prev = screenRef.current;
@@ -258,14 +324,9 @@ export default function App() {
   }, []);
 
   // Menu music: on in the lobby, off in game.
+  // The engine starts the loop once audio is actually running and never runs two at once.
   useEffect(() => {
-    const sfx = sfxRef.current;
-    const want = LOBBY.has(screen) && screen !== 'splash' && settings.music && !settings.muted;
-    sfx.setAmbient(want);
-    if (want) {
-      const retry = window.setTimeout(() => sfx.setAmbient(true), 400); // audio context may still be resuming
-      return () => window.clearTimeout(retry);
-    }
+    sfxRef.current.setAmbient(LOBBY.has(screen) && screen !== 'splash' && settings.music && !settings.muted);
   }, [screen, settings.music, settings.muted]);
 
   // Subtle hover/click feedback on every button (mouse only for hover).
@@ -308,6 +369,7 @@ export default function App() {
       setResult(null);
       setHud(hudFrom(gameRef.current));
       setIntroKey((k) => k + 1);
+      setPhaseBanner(null);
       sfxRef.current.play('start');
       setScreen('playing');
       hideJoystick();
@@ -399,6 +461,8 @@ export default function App() {
         peakMultiplier: g.stats.peakMultiplier,
         chaosSurvived: [...g.stats.chaosSurvived],
         orbs: g.stats.orbs,
+        events: g.stats.eventsSurvived,
+        bosses: g.stats.bosses,
         label: run.label,
         dateKey: run.dateKey,
       };
@@ -416,6 +480,7 @@ export default function App() {
         label: run.label,
         previousTime,
         boss: g.boss ? { hp: g.boss.hp, maxHp: g.boss.maxHp } : null,
+        phase: g.base.phases.length > 0 ? { index: g.phase, count: g.base.phases.length, name: g.base.phases[g.phase].name } : null,
       });
       overAtRef.current = performance.now();
       inputRef.current.reset();
@@ -425,6 +490,8 @@ export default function App() {
       }
       setScreen(won ? 'won' : 'over');
       hideJoystick();
+      // Between-run ad hook: frequency-capped, never blocks retrying. No provider today, so a no-op.
+      void maybeShowInterstitial(ADS_CONFIG, premiumRef.current, adFrequency.current);
     },
     [hideJoystick, setScreen, updateProgress],
   );
@@ -492,9 +559,28 @@ export default function App() {
         sfx.play('click');
         break;
       case 'orb':
-        fx.confetti(e.x, e.y, 18, [glow, '#F3F0EA']);
-        fx.popup(e.x, e.y - 30, e.target ? `${e.collected}/${e.target}` : `+${ORB_POINTS}`);
-        sfx.play('orb');
+        fx.confetti(e.x, e.y, e.bonus ? 30 : 18, e.bonus ? ['#FFD54A', '#F3F0EA'] : [glow, '#F3F0EA']);
+        fx.popup(e.x, e.y - 30, e.bonus ? 'GOLD +150' : e.target ? `${e.collected}/${e.target}` : `+${ORB_POINTS}`, e.bonus);
+        sfx.play(e.bonus ? 'unlock' : 'orb');
+        break;
+      case 'phase':
+        if (e.index > 0) {
+          setPhaseBanner({ key: performance.now(), name: e.name, hint: e.hint, index: e.index, count: e.count });
+          fx.flash = Math.max(fx.flash, 0.35);
+          sfx.play('levelup');
+        }
+        break;
+      case 'objectiveComplete':
+        fx.popup(ARENA / 2, ARENA * 0.4, 'COMPLETE', true);
+        fx.confetti(p.x, p.y, 80, [glow, '#FF4FD8', '#4FE3F0', '#F3F0EA']);
+        fx.flash = 0.6;
+        sfx.play('levelup');
+        break;
+      case 'bossSpawn':
+        fx.popup(e.x, e.y - 90, `CORE ${e.tier + 1}`, true);
+        fx.burst(e.x, e.y, 40, 420, true, 7, 0.9);
+        fx.addShake(14);
+        sfx.play('boot');
         break;
       case 'voidWarn':
         sfx.play('warning');
@@ -520,16 +606,18 @@ export default function App() {
         fx.addShake(24);
         fx.flash = 1;
         sfx.play('death');
-        try {
-          navigator.vibrate?.(70);
-        } catch {
-          // vibration unsupported
+        // Haptics only on touch devices the player has actually tapped (browsers block it otherwise).
+        if (isTouchRef.current && (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation?.hasBeenActive !== false) {
+          try {
+            navigator.vibrate?.(70);
+          } catch {
+            // vibration unsupported
+          }
         }
         break;
       case 'victory':
-        fx.confetti(ARENA / 2, ARENA / 2, 110, [glow, '#FF4FD8', '#4FE3F0', '#FFD54A', '#F3F0EA']);
-        fx.burst(p.x, p.y, 30, 300, false, 5, 1);
-        sfx.play('levelup');
+        fx.confetti(ARENA / 2, ARENA / 2, 60, [glow, '#FF4FD8', '#4FE3F0', '#FFD54A', '#F3F0EA']);
+        sfx.play('win');
         break;
     }
   }, []);
@@ -569,7 +657,7 @@ export default function App() {
         case 'Escape':
           if (s === 'playing') pause();
           else if (s === 'paused') resume();
-          else if (s === 'levels' || s === 'collection' || s === 'records' || s === 'settings' || s === 'premium') setScreen('home');
+          else if (s === 'levels' || s === 'modes' || s === 'collection' || s === 'records' || s === 'settings' || s === 'premium') setScreen('home');
           break;
         case 'KeyR':
           if (s === 'paused' || ((s === 'over' || s === 'won') && canAct())) retry();
@@ -605,8 +693,7 @@ export default function App() {
   function enterFromSplash() {
     if (screenRef.current !== 'splash') return;
     const sfx = sfxRef.current;
-    sfx.unlock();
-    sfx.play('boot');
+    if (!progressRef.current.settings.muted) void sfx.unlock().then(() => sfx.play('boot'));
     setScreen('home');
   }
 
@@ -815,12 +902,12 @@ export default function App() {
   const daily = useMemo(() => dailyChallenge(), [screen]); // refreshed whenever screens change
   const dailyBest = progress.daily && progress.daily.date === daily.key ? progress.daily.best : 0;
   const lobby = LOBBY.has(screen);
-  const lobbyAccent: RGB = screen === 'levels' ? STAGES[levelsFocus].accent : screen === 'premium' ? MAGENTA : CYAN;
+  const lobbyAccent: RGB = screen === 'levels' ? STAGES[levelsFocus].accent : screen === 'modes' ? endlessMode(modesFocus).accent : screen === 'premium' ? MAGENTA : CYAN;
 
   let runBest = 0;
   if (run.config.mode === 'stage') runBest = progress.stages[run.config.stage]?.best ?? 0;
   else if (run.config.mode === 'trial') runBest = progress.trialBest[run.config.stage] ?? 0;
-  else if (run.config.mode === 'endless') runBest = progress.endlessBest;
+  else if (isEndlessMode(run.config.mode)) runBest = progress.modeBests[run.config.mode].score;
   else runBest = progress.daily && progress.daily.date === run.dateKey ? progress.daily.best : 0;
 
   // Objective display: time, orbs or boss health.
@@ -836,14 +923,31 @@ export default function App() {
   } else if (objective?.type === 'boss' && hud.boss) {
     objFrac = (hud.boss.maxHp - hud.boss.hp) / hud.boss.maxHp;
   }
-  const modeStat =
-    run.config.mode === 'stage'
-      ? { label: 'Level', value: `${run.config.stage + 1}/${STAGES.length}` }
-      : objective?.type === 'orbs' || objective?.type === 'boss'
-        ? { label: 'Mode', value: 'Trial' }
-        : { label: 'Mode', value: run.config.mode === 'daily' ? 'Daily' : run.config.mode === 'trial' ? 'Trial' : 'Endless' };
+  // Headline stats for the HUD, by mode. Kept to four so they fit on a phone.
+  const stats: { label: string; value: string; highlight?: boolean; urgent?: boolean }[] = [];
+  const mode = run.config.mode;
+  const threat = { label: 'Threat', value: `Lv ${hud.threat}` };
+  if (mode === 'stage' || mode === 'trial') {
+    if (objective?.type === 'orbs') stats.push({ label: 'Orbs', value: `${hud.orbs}/${objective.orbs}`, highlight: true });
+    if (objective?.type === 'boss' && hud.boss) stats.push({ label: 'Core', value: `${hud.boss.hp}/${hud.boss.maxHp}`, highlight: true });
+    if (objective?.type !== 'boss') stats.push(objStat);
+    if (hud.phase.count > 1) stats.push({ label: 'Phase', value: `${hud.phase.index + 1}/${hud.phase.count}` });
+    else stats.push({ label: 'Level', value: mode === 'stage' ? `${run.config.stage + 1}/${STAGES.length}` : 'Trial' });
+  } else if (mode === 'orbrush') {
+    stats.push({ label: 'Orbs', value: String(hud.orbs), highlight: true }, objStat, threat);
+  } else if (mode === 'chaos') {
+    stats.push({ label: 'Events', value: String(hud.events), highlight: true }, objStat, threat);
+  } else if (mode === 'bossrush') {
+    stats.push({ label: 'Bosses', value: String(hud.bosses), highlight: true });
+    if (hud.boss) stats.push({ label: 'Core', value: hud.boss.hp > 0 ? `${hud.boss.hp}/${hud.boss.maxHp}` : 'next…' });
+    stats.push(threat);
+  } else {
+    stats.push(objStat, threat);
+  }
+  stats.push({ label: 'Best', value: runBest.toLocaleString() });
 
   return (
+    <AdsContext.Provider value={adsValue}>
     <div className={`app app-${screen}`} style={appStyle}>
       <header className="hud">
         {showRunHud ? (
@@ -857,20 +961,16 @@ export default function App() {
               </span>
             </div>
             <div className="hud-stats">
-              {objective?.type === 'orbs' && <Stat label="Orbs" value={`${hud.orbs}/${objective.orbs}`} highlight />}
-              {objective?.type === 'boss' && hud.boss && <Stat label="Core" value={`${hud.boss.hp}/${hud.boss.maxHp}`} highlight />}
-              <Stat label={objStat.label} value={objStat.value} urgent={objStat.urgent} />
-              <Stat label={modeStat.label} value={modeStat.value} />
-              <Stat label="Best" value={runBest.toLocaleString()} />
+              {stats.map((st) => (
+                <Stat key={st.label} label={st.label} value={st.value} highlight={st.highlight} urgent={st.urgent} />
+              ))}
             </div>
           </>
         ) : (
           <span className="brand">Chaos Theory</span>
         )}
         <div className="hud-buttons">
-          <IconButton label={settings.muted ? 'Unmute sound' : 'Mute sound'} onClick={toggleMute}>
-            <SoundIcon muted={settings.muted} />
-          </IconButton>
+          <SoundToggle muted={settings.muted} audioState={audioState} onToggle={toggleMute} onEnable={enableSound} />
           {showRunHud && (
             <IconButton label={screen === 'paused' ? 'Resume game' : 'Pause game'} onClick={screen === 'paused' ? resume : pause} disabled={!inGame}>
               {screen === 'paused' ? <PlayIcon /> : <PauseIcon />}
@@ -913,6 +1013,29 @@ export default function App() {
               </span>
             </div>
           )}
+          {inGame && phaseBanner && (
+            <div key={phaseBanner.key} className="phase-banner" role="status" aria-live="polite">
+              <span className="phase-banner-kicker">
+                {mode === 'stage' ? 'Phase' : 'Stage'} {phaseBanner.index + 1}/{phaseBanner.count}
+              </span>
+              <span className="phase-banner-name">{phaseBanner.name}</span>
+              <span className="phase-banner-hint">{phaseBanner.hint}</span>
+            </div>
+          )}
+          {inGame && hud.boss && (
+            <div className={`boss-bar${hud.boss.shield ? ' boss-bar-shield' : ''}`} aria-label={`Core health ${hud.boss.hp} of ${hud.boss.maxHp}`}>
+              <span className="boss-bar-name">
+                {mode === 'bossrush' ? `Core ${hud.bosses + (hud.boss.hp > 0 ? 1 : 0)}` : 'The Core'}
+                {hud.phase.count > 1 && <span className="dim"> · {hud.phase.name}</span>}
+                {hud.boss.shield && <span className="boss-bar-tag">Shielded</span>}
+              </span>
+              <span className="boss-bar-track">
+                {Array.from({ length: hud.boss.maxHp }, (_, i) => (
+                  <span key={i} className={i < hud.boss!.hp ? 'on' : ''} />
+                ))}
+              </span>
+            </div>
+          )}
           {chaos && (
             <div className={`banner banner-${chaos.phase}${hud.playerNearTop ? ' banner-dim' : ''}`} role="status" aria-live="polite">
               <span className="banner-kicker">{chaos.phase === 'warning' ? (chaos.partner ? 'Incoming · double' : 'Incoming') : 'Chaos active'}</span>
@@ -943,11 +1066,13 @@ export default function App() {
               progress={progress}
               daily={{ mutator: daily.mutator, best: dailyBest }}
               muted={settings.muted}
+              audioState={audioState}
               isTouch={isTouch}
               onToggleSound={toggleMute}
+              onEnableSound={enableSound}
               onPlay={playNext}
               onLevels={() => openLevels()}
-              onEndless={() => beginRun(makeEndlessRun())}
+              onModes={() => setScreen('modes')}
               onDaily={() => beginRun(makeDailyRun())}
               onTrials={() => setScreen('premium')}
               onCollection={() => setScreen('collection')}
@@ -966,6 +1091,18 @@ export default function App() {
               themeLook={{ arena: theme.arena, accent: theme.accent, shape: settings.shape }}
               initial={levelsFocus}
               onPlay={(i) => beginRun(makeStageRun(i))}
+              onBack={() => setScreen('home')}
+            />
+          )}
+          {screen === 'modes' && (
+            <ModesScreen
+              progress={progress}
+              themeLook={{ arena: theme.arena, accent: theme.accent, shape: settings.shape }}
+              initial={modesFocus}
+              onStart={(id) => {
+                setModesFocus(id);
+                beginRun(makeModeRun(id));
+              }}
               onBack={() => setScreen('home')}
             />
           )}
@@ -990,11 +1127,11 @@ export default function App() {
           {screen === 'premium' && (
             <PremiumScreen
               progress={progress}
-              onUnlock={() => {
-                updateProgress(setPremiumDemo(progressRef.current, true).progress);
-                sfxRef.current.play('levelup');
+              premiumStatus={premiumStatus}
+              onPreviewCosmetics={(on) => {
+                updateProgress(setPremiumDemo(progressRef.current, on).progress);
+                if (on) sfxRef.current.play('unlock');
               }}
-              onRemove={() => updateProgress(setPremiumDemo(progressRef.current, false).progress)}
               onPlayTrial={(i) => beginRun(makeTrialRun(i))}
               onBack={() => setScreen('home')}
             />
@@ -1023,6 +1160,10 @@ export default function App() {
           onRetry={retry}
           onMenu={() => toLobby()}
           onLevels={() => openLevels(result.summary.stage)}
+          onModes={() => {
+            if (isEndlessMode(result.summary.mode)) setModesFocus(result.summary.mode);
+            toLobby('modes');
+          }}
           onSkip={skipCurrent}
         />
       )}
@@ -1036,6 +1177,7 @@ export default function App() {
         />
       )}
     </div>
+    </AdsContext.Provider>
   );
 }
 
