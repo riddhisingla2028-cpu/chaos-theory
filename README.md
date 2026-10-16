@@ -87,9 +87,13 @@ Real-time, private rooms over WebRTC. One player creates a room and gets a 5-cha
 
 **Limits:** the host's game is trusted, so this suits private games between friends, not ranked or public matchmaking. That would need a dedicated authoritative game server (for example a small Node WebSocket service), which also removes the peer-to-peer address sharing. Some strict corporate or mobile networks block peer-to-peer connections; a TURN relay service would be needed to reach those players. Multiplayer does not award XP.
 
-### Chaos+ (coming soon)
+### Chaos+ (optional supporter purchase)
 
-Chaos+ is a planned optional, one-time upgrade with no gameplay advantage: it removes ads and adds the Chaos+ collection (two skins, two themes, two bonus trials). **Purchasing is not available yet:** the button shows "Coming soon", no price is shown, and no payment can be made. Only a server-verified purchase (`PURCHASE_VERIFIER` in `src/monetization/entitlements.ts`) can ever switch ads off; nothing stored in the browser can. Until purchases open, anyone can try the Chaos+ collection in a clearly labelled free preview, which does not remove ads. Everything else (all levels, Endless, multiplayer, challenges, XP, trails and victory effects) stays free. Players stuck on a level for three attempts can skip it for free (no stars).
+Chaos+ is an optional one-time purchase sold through Gumroad. It adds a supporter badge, the Halo trail and Supernova victory effect (which cannot be earned by playing), the Chaos+ collection (two skins, two themes) and two bonus trials. It never affects gameplay; every level, mode and multiplayer room is free.
+
+**Purchase verification:** Gumroad emails the buyer a license key. The game sends it to `/api/verify-license` (a Cloudflare Pages Function in `functions/`, logic in `server/license.ts`), which checks it with Gumroad. Only a valid, unrefunded, non-charged-back purchase unlocks Chaos+, and the key is re-checked on every visit. Nothing in the browser can grant Chaos+ on its own, and no secret key exists.
+
+**Until it is configured** (see `.env.example` and `LAUNCH.md`), the page shows "Coming soon", no price, and a clearly labelled free preview of the collection. Players stuck on a level for three attempts can skip it for free (no stars).
 
 ### Advertising (disabled)
 
@@ -131,6 +135,10 @@ src/
   App.tsx             Screen flow, HUD, game loop, touch controls
 ```
 
+## Launching
+
+See [LAUNCH.md](LAUNCH.md) for the feature audit, the payment and hosting decision, step-by-step setup (Gumroad, Cloudflare Pages, domain, analytics), the launch plan and the submission checklist.
+
 ## Run locally
 
 Requires Node.js 20.19 or newer.
@@ -144,7 +152,7 @@ npm run dev -- --host 0.0.0.0  # also reachable from a phone on the same Wi-Fi
 ## Test and build
 
 ```bash
-npm test           # 195 unit tests
+npm test           # 204 unit tests
 npm run build      # type-check + production build into dist/
 npm run preview    # serve the production build locally
 ```
