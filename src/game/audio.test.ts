@@ -16,7 +16,15 @@ class FakeContext {
     this.state = initial;
   }
   private node() {
-    const param = () => ({ value: 0, setValueAtTime() {}, exponentialRampToValueAtTime() {}, cancelScheduledValues() {} });
+    const param = () => ({
+      value: 0,
+      setValueAtTime() {},
+      exponentialRampToValueAtTime() {},
+      cancelScheduledValues() {},
+      setTargetAtTime(this: { value: number }, v: number) {
+        this.value = v;
+      },
+    });
     const n: Record<string, unknown> = {
       gain: param(),
       frequency: param(),
@@ -151,5 +159,40 @@ describe('mute and music', () => {
     expect(sfx.ambientLoops).toBe(0);
     await sfx.unlock();
     expect(sfx.ambientLoops).toBe(1);
+  });
+});
+
+describe('separate sound and music volume', () => {
+  it('music volume 0 stops the music but sound effects still play', async () => {
+    const ctx = new FakeContext();
+    const { sfx } = make(ctx);
+    await sfx.unlock();
+    sfx.setAmbient(true);
+    expect(sfx.ambientLoops).toBe(1);
+    sfx.setVolumes(1, 0);
+    expect(sfx.ambientLoops).toBe(0);
+    const before = ctx.oscillators;
+    sfx.play('orb');
+    expect(ctx.oscillators).toBeGreaterThan(before);
+  });
+
+  it('sound volume 0 silences effects without touching the music', async () => {
+    const ctx = new FakeContext();
+    const { sfx } = make(ctx);
+    await sfx.unlock();
+    sfx.setVolumes(0, 1);
+    sfx.setAmbient(true);
+    expect(sfx.ambientLoops).toBe(1);
+    const before = ctx.oscillators;
+    sfx.play('orb');
+    expect(ctx.oscillators).toBe(before);
+  });
+
+  it('never goes above full volume, whatever it is given', () => {
+    const { sfx } = make(new FakeContext());
+    sfx.setVolumes(5, Number.NaN);
+    expect(sfx.volumes).toEqual({ sfx: 1, music: 1 });
+    sfx.setVolumes(-1, 0.5);
+    expect(sfx.volumes).toEqual({ sfx: 0, music: 0.25 });
   });
 });

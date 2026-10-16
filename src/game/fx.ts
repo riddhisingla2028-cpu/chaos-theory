@@ -24,11 +24,22 @@ export interface Popup {
   big: boolean;
 }
 
+export interface Ring {
+  x: number;
+  y: number;
+  r: number;
+  speed: number;
+  life: number;
+  max: number;
+  color: string;
+}
+
 const MAX_PARTICLES = 240;
 
 export class Fx {
   particles: Particle[] = [];
   popups: Popup[] = [];
+  rings: Ring[] = [];
   shake = 0;
   flash = 0;
   private thrustClock = 0;
@@ -36,6 +47,7 @@ export class Fx {
   reset(): void {
     this.particles = [];
     this.popups = [];
+    this.rings = [];
     this.shake = 0;
     this.flash = 0;
   }
@@ -89,7 +101,42 @@ export class Fx {
     }
   }
 
+  /** Expanding light rings (the Shockwave victory effect). */
+  ring(x: number, y: number, color: string, delay = 0, speed = 900): void {
+    if (this.rings.length < 12) this.rings.push({ x, y, r: 0, speed, life: 1.1 + delay, max: 1.1, color });
+  }
+
+  /** The player's chosen victory celebration. All are purely visual. */
+  victory(kind: string, cx: number, cy: number, colors: string[]): void {
+    switch (kind) {
+      case 'shockwave':
+        for (let i = 0; i < 4; i++) this.ring(cx, cy, colors[i % colors.length], i * 0.18);
+        this.confetti(cx, cy, 24, colors);
+        break;
+      case 'fireworks':
+        for (let i = 0; i < 5; i++) {
+          const x = 180 + Math.random() * 640;
+          const y = 160 + Math.random() * 520;
+          this.confetti(x, y, 26, [colors[i % colors.length], '#F3F0EA']);
+        }
+        break;
+      case 'starfall':
+        for (let i = 0; i < 90 && this.particles.length < MAX_PARTICLES + 120; i++) {
+          const l = 1.2 + Math.random() * 1.2;
+          this.particles.push({ x: Math.random() * 1000, y: -40 - Math.random() * 300, vx: (Math.random() - 0.5) * 40, vy: 700 + Math.random() * 500, life: l, max: l, size: 4 + Math.random() * 6, accent: false, color: colors[i % colors.length] });
+        }
+        break;
+      default:
+        this.confetti(cx, cy, 60, colors);
+    }
+  }
+
   update(dt: number): void {
+    for (const rg of this.rings) {
+      rg.life -= dt;
+      if (rg.life <= rg.max) rg.r += rg.speed * dt; // waits out its delay first
+    }
+    this.rings = this.rings.filter((rg) => rg.life > 0);
     for (const pt of this.particles) {
       pt.life -= dt;
       pt.x += pt.vx * dt;

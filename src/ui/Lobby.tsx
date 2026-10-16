@@ -13,9 +13,11 @@ import {
   maxStars,
   nextStage,
   totalStars,
+  accountLevel,
   type Progress,
   type RecordEntry,
 } from '../progress';
+import { challengeById, currentChallenges } from '../progression';
 import { LevelPreview } from './LevelPreview';
 import { AdSlot } from './AdSlot';
 import { PURCHASES_AVAILABLE, type PremiumStatus } from '../monetization/entitlements';
@@ -81,18 +83,30 @@ export function HomeScreen(props: {
   onRecords: () => void;
   onSettings: () => void;
   onPremium: () => void;
+  onProfile: () => void;
   onTutorial: () => void;
+  extraTiles?: ReactNode;
 }) {
   const p = props.progress;
   const next = nextStage(p);
   const cleared = levelsCleared(p);
   const nextDef = next >= 0 ? STAGES[next] : null;
-  const playSub = nextDef ? `Level ${next + 1} · ${nextDef.name}` : 'Endless mode';
+  const playSub = nextDef ? `Level ${next + 1} · ${nextDef.name} · ${nextDef.arena.name}` : 'Campaign complete · play Endless';
+  const lvl = accountLevel(p);
+  const today = currentChallenges(p.challenges, new Date()).daily!;
+  const todayDone = today.done.filter(Boolean).length;
   return (
     <div className="screen home">
       <header className="topbar">
         <span className="logo logo-sm">CHAOS THEORY</span>
         <div className="topbar-right">
+          <button type="button" className="profile-chip" onClick={props.onProfile} aria-label={`Profile: account level ${lvl.level}`}>
+            <ShapePreview shape={p.settings.shape} size={18} />
+            <span className="profile-chip-level">Lv {lvl.level}</span>
+            <span className="profile-chip-bar" aria-hidden="true">
+              <span style={{ transform: `scaleX(${lvl.need ? lvl.into / lvl.need : 1})` }} />
+            </span>
+          </button>
           <span className="player-chip" title="Stars earned">
             ★ {totalStars(p)}
             <span className="dim">/{maxStars()}</span>
@@ -104,14 +118,14 @@ export function HomeScreen(props: {
 
       <main className="home-main">
         <section className="hero">
-          <p className="eyebrow">Ten levels. Nine rules. One arena.</p>
+          <p className="eyebrow">Ten arenas. Nine rules. One Core.</p>
           <h1 className="logo logo-xl" data-text="CHAOS THEORY">
             <span>CHAOS</span>
             <span>THEORY</span>
           </h1>
           <p className="hero-tag">Survive the arena. The rules won&rsquo;t stay the same.</p>
           <button type="button" className="play-now" onClick={props.onPlay} autoFocus style={nextDef ? ({ '--lvl': rgb(nextDef.accent) } as CSSProperties) : undefined}>
-            <span className="play-now-label">Play now</span>
+            <span className="play-now-label">{nextDef ? 'Play campaign' : 'Play Endless'}</span>
             <span className="play-now-sub">{playSub}</span>
           </button>
           <div className="campaign" aria-label={`${cleared} of ${STAGES.length} levels cleared`}>
@@ -129,11 +143,38 @@ export function HomeScreen(props: {
           <ModeTile title="Endless Modes" meta="4 modes · always unlocked" glyph="infinity" onClick={props.onModes} featured />
           <ModeTile title="Daily" meta={`${props.daily.mutator.name}${props.daily.best ? ` · ${props.daily.best.toLocaleString()}` : ''}`} glyph="sun" onClick={props.onDaily} />
           <ModeTile title="Trials" meta={p.premiumDemo ? `${TRIALS.length} bonus challenges` : 'Chaos+'} glyph="bolt" onClick={props.onTrials} badge={!p.premiumDemo ? 'Plus' : undefined} />
+          {props.extraTiles}
         </section>
+
+        <button type="button" className="today" onClick={props.onProfile}>
+          <span className="today-head">
+            <span className="today-title">Today&rsquo;s challenges</span>
+            <span className="today-count">
+              {todayDone}/{today.ids.length} done
+            </span>
+          </span>
+          <span className="today-list">
+            {today.ids.map((id, i) => {
+              const def = challengeById(id);
+              if (!def) return null;
+              return (
+                <span key={id} className={`today-item${today.done[i] ? ' today-done' : ''}`}>
+                  <span className="today-text">{def.text}</span>
+                  <span className="today-bar" aria-hidden="true">
+                    <span style={{ transform: `scaleX(${Math.min(1, today.progress[i] / def.target)})` }} />
+                  </span>
+                </span>
+              );
+            })}
+          </span>
+        </button>
         <AdSlot placement="home_banner" />
       </main>
 
       <nav className="bottom-nav" aria-label="More">
+        <button type="button" onClick={props.onProfile}>
+          Profile
+        </button>
         <button type="button" onClick={props.onCollection}>
           Collection<span className="dim"> {p.achievements.length}/{ACHIEVEMENTS.length}</span>
         </button>

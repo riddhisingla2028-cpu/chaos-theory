@@ -27,7 +27,7 @@ describe('ads configuration', () => {
   });
 
   it('defines the four placements with reserved heights', () => {
-    expect(Object.keys(AD_PLACEMENTS).sort()).toEqual(['endless_results_banner', 'home_banner', 'level_select_banner', 'results_banner']);
+    expect(Object.keys(AD_PLACEMENTS).sort()).toEqual(['endless_results_banner', 'home_banner', 'level_select_banner', 'profile_banner', 'results_banner']);
     for (const p of Object.values(AD_PLACEMENTS)) expect(p.height.mobile).toBeGreaterThan(0);
   });
 });
@@ -102,11 +102,14 @@ describe('AdSlot component', () => {
     expect(render(adsConfigFrom({ DEV: false }), 'free')).toBe('');
   });
 
-  it('renders a clearly marked development placeholder, never an "Advertisement" label', () => {
+  it('renders a development placeholder labelled "Advertisement" with its intended size, clearly marked as a placeholder', () => {
     const html = render(adsConfigFrom({ DEV: true }), 'free');
-    expect(html).toContain('Ad placeholder');
-    expect(html).toContain('development only');
-    expect(html).not.toContain('>Advertisement<');
+    expect(html).toContain('>Advertisement<');
+    expect(html).toContain('320 × 50');
+    expect(html).toContain('468 × 60');
+    expect(html).toContain('placeholder, development only');
+    expect(html).not.toContain('<iframe');
+    expect(html).not.toContain('<script');
   });
 
   it('renders nothing for a verified premium player', () => {

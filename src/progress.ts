@@ -4,19 +4,40 @@
 import { CHAOS_KINDS, type ChaosKind, type GameMode } from './game/engine';
 import { ENDLESS_MODES, STAGES, TRIALS, starsFor, type EndlessId } from './game/stages';
 import { BEST_KEY, loadBest, type KeyValueStore } from './storage';
+import {
+  addHistory,
+  applyChallenges,
+  levelFromXp,
+  runXp,
+  unlockedBetween,
+  type ChallengeState,
+  type CompletedChallenge,
+  type MatchEntry,
+  type TrailId,
+  type VictoryId,
+  type XpLine,
+} from './progression';
 
 export const PROGRESS_KEY = 'chaos-theory.progress.v1';
 const LEVELS_VERSION = 2; // bumped when the level list changes, so old level records are not misapplied
-export const SAVE_VERSION = 3; // overall save structure version (3: per-mode Endless bests)
+export const SAVE_VERSION = 4; // overall save structure version (3: per-mode Endless bests, 4: XP, challenges, history)
 
 export type ShapeId = 'square' | 'diamond' | 'triangle' | 'circle' | 'hexagon' | 'star' | 'nova' | 'spark';
 export type ThemeId = 'obsidian' | 'ember' | 'glacier' | 'verdant' | 'aurum' | 'synthwave' | 'aurora';
 export type JoyMode = 'float' | 'fixed';
 export type JoySize = 'S' | 'M' | 'L';
 
+export type MotionPref = 'system' | 'reduced' | 'full';
+
 export interface Settings {
   muted: boolean;
   music: boolean;
+  sfxVolume: number; // 0..1
+  musicVolume: number; // 0..1
+  reducedMotion: MotionPref;
+  highContrast: boolean;
+  trail: TrailId;
+  victory: VictoryId;
   shake: boolean;
   joyMode: JoyMode;
   joySize: JoySize;
@@ -67,6 +88,17 @@ export interface Progress {
   premiumDemo: boolean; // "Chaos+" unlocked through the DEMO checkout (no real payment)
   tutorialSeen: boolean;
   settings: Settings;
+  xp: number;
+  challenges: ChallengeState;
+  history: MatchEntry[];
+  /** Per level: attempts, failed attempts (deaths) and the fastest clear in seconds. */
+  stageStats: Record<number, StageStats>;
+}
+
+export interface StageStats {
+  attempts: number;
+  deaths: number;
+  fastest: number | null;
 }
 
 export interface RunSummary {
@@ -102,6 +134,11 @@ export interface RunOutcome {
   newBests: (keyof ModeBest)[]; // Endless modes: which personal bests this run improved
   newAchievements: Achievement[];
   newUnlocks: Unlock[];
+  xpLines: XpLine[]; // itemised XP for this run, challenges and achievements included
+  xpGained: number;
+  xpBefore: number;
+  challengesCompleted: CompletedChallenge[];
+  newCosmetics: string[]; // trails and victory effects unlocked by levelling up
 }
 
 function defaultModeBests(): Record<EndlessId, ModeBest> {
@@ -129,12 +166,31 @@ export function defaultProgress(): Progress {
     records: [],
     premiumDemo: false,
     tutorialSeen: false,
-    settings: { muted: false, music: true, shake: true, joyMode: 'float', joySize: 'M', shape: 'square', theme: 'obsidian' },
+    settings: {
+      muted: false,
+      music: true,
+      sfxVolume: 0.8,
+      musicVolume: 0.6,
+      reducedMotion: 'system',
+      highContrast: false,
+      trail: 'classic',
+      victory: 'confetti',
+      shake: true,
+      joyMode: 'float',
+      joySize: 'M',
+      shape: 'square',
+      theme: 'obsidian',
+    },
+    xp: 0,
+    challenges: { daily: null, weekly: null },
+    history: [],
+    stageStats: {},
   };
 }
 
 // ---------- Queries ----------
 
+export const accountLevel = (p: Progress) => levelFromXp(p.xp);
 export const isCleared = (p: Progress, stage: number) => p.stages[stage] !== undefined;
 export const isSkipped = (p: Progress, stage: number) => p.skipped.includes(stage);
 export const isStageUnlocked = (p: Progress, stage: number) =>
@@ -258,7 +314,7 @@ function addRecord(p: Progress, run: RunSummary): void {
 
 // ---------- Applying a run ----------
 
-export function applyRun(prev: Progress, run: RunSummary): RunOutcome {
+export function applyRun(prev: Progress, run: RunSummary, now: Date = new Date()): RunOutcome {
   const p: Progress = structuredClone(prev);
   const before = unlockedSet(prev);
   p.runs++;
@@ -292,6 +348,11 @@ export function applyRun(prev: Progress, run: RunSummary): RunOutcome {
     previousStars = rec?.stars ?? 0;
     previousBest = rec?.best ?? 0;
     p.stageTime[run.stage] = Math.max(p.stageTime[run.stage] ?? 0, run.time);
+    const st: StageStats = { ...(p.stageStats[run.stage] ?? { attempts: 0, deaths: 0, fastest: null }) };
+    st.attempts++;
+    if (run.won) st.fastest = st.fastest === null ? run.time : Math.min(st.fastest, run.time);
+    else st.deaths++;
+    p.stageStats = { ...p.stageStats, [run.stage]: st };
     if (run.won) {
       firstClear = !rec;
       stars = starsFor(run.stage, run.score);
@@ -315,6 +376,36 @@ export function applyRun(prev: Progress, run: RunSummary): RunOutcome {
   addRecord(p, run);
 
   const newAchievements = awardAchievements(p, run);
+
+  // XP: the run itself, then any challenges it completed, then achievements.
+  const facts = {
+    mode: run.mode,
+    won: run.won,
+    time: run.time,
+    orbs: run.orbs ?? 0,
+    nearMisses: run.nearMisses,
+    bosses: run.bosses ?? 0,
+    stars,
+    firstClear,
+  };
+  const xpLines = runXp(facts);
+  const ch = applyChallenges(p.challenges, facts, now);
+  p.challenges = ch.state;
+  for (const c of ch.completed) xpLines.push({ label: `${c.scope === 'daily' ? 'Daily' : 'Weekly'} challenge: ${c.def.text}`, xp: c.def.xp });
+  for (const a of newAchievements) xpLines.push({ label: `Achievement: ${a.name}`, xp: 50 });
+  const xpGained = xpLines.reduce((n, l) => n + l.xp, 0);
+  const xpBefore = p.xp;
+  p.xp += xpGained;
+  p.history = addHistory(p.history, {
+    mode: run.mode,
+    label: run.label ?? run.mode,
+    won: run.won,
+    score: run.score,
+    time: run.time,
+    xp: xpGained,
+    date: now.toISOString(),
+  });
+
   return {
     progress: p,
     best,
@@ -326,6 +417,11 @@ export function applyRun(prev: Progress, run: RunSummary): RunOutcome {
     newBests,
     newAchievements,
     newUnlocks: diffUnlocks(before, p),
+    xpLines,
+    xpGained,
+    xpBefore,
+    challengesCompleted: ch.completed,
+    newCosmetics: unlockedBetween(xpBefore, p.xp),
   };
 }
 
@@ -397,6 +493,16 @@ export function loadProgress(storage: KeyValueStore | null = browserStorage()): 
         modeBests: { ...base.modeBests, ...(saved.modeBests ?? {}) },
         saveVersion: SAVE_VERSION,
       };
+      // Saves from before XP and challenges: start those fresh, keep everything else.
+      if (typeof merged.xp !== 'number' || !Number.isFinite(merged.xp) || merged.xp < 0) merged.xp = 0;
+      if (!Array.isArray(merged.history)) merged.history = [];
+      if (!merged.challenges || typeof merged.challenges !== 'object') merged.challenges = { daily: null, weekly: null };
+      if (!merged.stageStats || typeof merged.stageStats !== 'object') merged.stageStats = {};
+      for (const k of ['sfxVolume', 'musicVolume'] as const) {
+        const v = merged.settings[k];
+        if (typeof v !== 'number' || !Number.isFinite(v)) merged.settings[k] = base.settings[k];
+        else merged.settings[k] = Math.min(1, Math.max(0, v));
+      }
       // Saves from before per-mode bests: carry the Classic best score over.
       merged.modeBests.endless = { ...emptyBest(), ...merged.modeBests.endless, score: Math.max(merged.modeBests.endless?.score ?? 0, merged.endlessBest) };
       if (saved.levelsVersion !== LEVELS_VERSION) {
@@ -406,6 +512,7 @@ export function loadProgress(storage: KeyValueStore | null = browserStorage()): 
         merged.stageTime = {};
         merged.fails = {};
         merged.skipped = [];
+        merged.stageStats = {};
       }
       return merged;
     }

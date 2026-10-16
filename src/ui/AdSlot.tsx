@@ -20,9 +20,16 @@ export function AdSlot({ placement, className = '' }: { placement: AdPlacementId
   if (mode === 'hidden') return null;
   if (mode === 'placeholder') {
     return (
-      <aside className={`ad-slot ad-placeholder ${className}`} style={style} data-placement={placement} aria-label="Advertising placeholder (development only)">
+      <aside className={`ad-slot ad-placeholder ${className}`} style={style} data-placement={placement} aria-label="Advertisement placeholder (development only, no ad is loaded)">
+        <span className="ad-label">Advertisement</span>
         <span className="ad-placeholder-text">
-          Ad placeholder · <code>{placement}</code> · development only, no ad is loaded
+          <span className="ad-size ad-size-mobile">
+            {p.width.mobile} × {p.height.mobile}
+          </span>
+          <span className="ad-size ad-size-desktop">
+            {p.width.desktop} × {p.height.desktop}
+          </span>{' '}
+          · <code>{placement}</code> · placeholder, development only
         </span>
       </aside>
     );

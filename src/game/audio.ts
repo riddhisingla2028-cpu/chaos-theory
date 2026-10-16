@@ -55,6 +55,10 @@ function preferPlaybackSession(): void {
 export class Sfx {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  private sfxBus: GainNode | null = null;
+  private musicBus: GainNode | null = null;
+  private sfxVolume = 1;
+  private musicVolume = 1;
   private lastNear = 0;
   private lastHover = 0;
   private ambient: { gain: GainNode; nodes: AudioScheduledSourceNode[] } | null = null;
@@ -112,6 +116,13 @@ export class Sfx {
         this.master = ctx.createGain();
         this.master.gain.value = 0.16;
         this.master.connect(comp).connect(ctx.destination);
+        // Separate buses so sound effects and music have their own volume.
+        this.sfxBus = ctx.createGain();
+        this.sfxBus.gain.value = this.sfxVolume;
+        this.sfxBus.connect(this.master);
+        this.musicBus = ctx.createGain();
+        this.musicBus.gain.value = this.musicVolume;
+        this.musicBus.connect(this.master);
         ctx.onstatechange = () => this.syncState();
         preferPlaybackSession();
       }
@@ -170,6 +181,28 @@ export class Sfx {
     this.syncAmbient();
   }
 
+  /**
+   * Volumes from 0 to 1 for sound effects and music. Values are clamped and squared so the
+   * slider feels even to the ear and can never exceed the original level (no sudden loud audio).
+   */
+  setVolumes(sfx: number, music: number): void {
+    const clamp = (v: number) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1);
+    this.sfxVolume = clamp(sfx) ** 2;
+    this.musicVolume = clamp(music) ** 2;
+    try {
+      const now = this.ctx?.currentTime ?? 0;
+      this.sfxBus?.gain.setTargetAtTime(this.sfxVolume, now, 0.05);
+      this.musicBus?.gain.setTargetAtTime(this.musicVolume, now, 0.05);
+    } catch {
+      // Audio must never break the game.
+    }
+    this.syncAmbient();
+  }
+
+  get volumes(): { sfx: number; music: number } {
+    return { sfx: this.sfxVolume, music: this.musicVolume };
+  }
+
   /** Menu music on or off. Starts only once audio is running and unmuted; never duplicates. */
   setAmbient(on: boolean): void {
     this.wantAmbient = on;
@@ -177,12 +210,12 @@ export class Sfx {
   }
 
   private syncAmbient(): void {
-    if (this.wantAmbient && !this.muted && this.state === 'running') this.startAmbient();
+    if (this.wantAmbient && !this.muted && this.musicVolume > 0 && this.state === 'running') this.startAmbient();
     else this.stopAmbient();
   }
 
   play(name: SoundName): void {
-    if (this.muted || !this.ctx || !this.master || this.state !== 'running') return;
+    if (this.muted || this.sfxVolume <= 0 || !this.ctx || !this.master || this.state !== 'running') return;
     try {
       this.playUnsafe(name);
     } catch {
@@ -298,7 +331,7 @@ export class Sfx {
         osc.connect(g).connect(filter);
         nodes.push(osc);
       }
-      filter.connect(gain).connect(this.master);
+      filter.connect(gain).connect(this.musicBus ?? this.master);
       nodes.forEach((n) => n.start());
       this.ambient = { gain, nodes };
     } catch {
@@ -337,7 +370,7 @@ export class Sfx {
     gain.gain.setValueAtTime(0.0001, t0);
     gain.gain.exponentialRampToValueAtTime(vol, t0 + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    osc.connect(gain).connect(this.master!);
+    osc.connect(gain).connect(this.sfxBus ?? this.master!);
     osc.start(t0);
     osc.stop(t0 + dur + 0.02);
   }
@@ -355,7 +388,7 @@ export class Sfx {
     if (to !== from) filter.frequency.exponentialRampToValueAtTime(to, ctx.currentTime + dur);
     const gain = ctx.createGain();
     gain.gain.value = vol;
-    src.connect(filter).connect(gain).connect(this.master!);
+    src.connect(filter).connect(gain).connect(this.sfxBus ?? this.master!);
     src.start();
   }
 }

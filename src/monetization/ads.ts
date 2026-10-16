@@ -8,22 +8,25 @@
 
 import { adsAllowedFor, type PremiumStatus } from './entitlements';
 
-export type AdPlacementId = 'home_banner' | 'level_select_banner' | 'results_banner' | 'endless_results_banner';
+export type AdPlacementId = 'home_banner' | 'level_select_banner' | 'results_banner' | 'endless_results_banner' | 'profile_banner';
 
 export interface AdPlacement {
   id: AdPlacementId;
   description: string;
   /** Reserved height in px so the layout does not jump when an ad loads. */
   height: { mobile: number; desktop: number };
+  /** Standard banner width for each layout (IAB sizes: 320x50 mobile, 468x60 or 728x90 desktop). */
+  width: { mobile: number; desktop: number };
   maxWidth: number;
 }
 
 /** Ads are never placed over the arena: none of these appear during active gameplay. */
 export const AD_PLACEMENTS: Record<AdPlacementId, AdPlacement> = {
-  home_banner: { id: 'home_banner', description: 'Home screen, below the game modes', height: { mobile: 50, desktop: 90 }, maxWidth: 728 },
-  level_select_banner: { id: 'level_select_banner', description: 'Level select, below the level grid', height: { mobile: 50, desktop: 60 }, maxWidth: 468 },
-  results_banner: { id: 'results_banner', description: 'Level results, below the buttons', height: { mobile: 50, desktop: 60 }, maxWidth: 468 },
-  endless_results_banner: { id: 'endless_results_banner', description: 'Endless results, below the buttons', height: { mobile: 50, desktop: 60 }, maxWidth: 468 },
+  home_banner: { id: 'home_banner', description: 'Lobby, below the game modes', height: { mobile: 50, desktop: 90 }, width: { mobile: 320, desktop: 728 }, maxWidth: 728 },
+  level_select_banner: { id: 'level_select_banner', description: 'Campaign level select, below the level grid', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468 },
+  results_banner: { id: 'results_banner', description: 'Level results, below the buttons', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468 },
+  endless_results_banner: { id: 'endless_results_banner', description: 'Endless results, below the buttons', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468 },
+  profile_banner: { id: 'profile_banner', description: 'Profile page, below the match history', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468 },
 };
 
 export type InterstitialResult = 'shown' | 'skipped' | 'unavailable';

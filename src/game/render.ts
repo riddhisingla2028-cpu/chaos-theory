@@ -33,6 +33,7 @@ export interface Look {
   motif: Motif;
   heat: number; // 0..1 accent vignette strength for the level
   shake: boolean;
+  trail?: string; // cosmetic trail style (TrailId)
 }
 
 const TEXT = '#F3F0EA';
@@ -87,7 +88,7 @@ export function drawGame(
   drawGravity(ctx, s, t);
   drawCollapse(ctx, s, t, px);
   drawHorizon(ctx, s, t, px);
-  drawTrail(ctx, s);
+  drawTrail(ctx, s, look.trail ?? 'classic', t);
   drawSweeps(ctx, s, t, px);
   drawWalls(ctx, arena, at, px);
   drawRotors(ctx, arena, at, t);
@@ -680,11 +681,16 @@ function drawHorizon(ctx: CanvasRenderingContext2D, s: GameState, t: number, px:
   ctx.stroke();
 }
 
-function drawTrail(ctx: CanvasRenderingContext2D, s: GameState): void {
+function drawTrail(ctx: CanvasRenderingContext2D, s: GameState, style: string, t: number): void {
   const trail = s.trail;
   if (trail.length < 2 || isActive(s, 'PHANTOM')) return;
   const c = s.chaos;
   const warning = c !== null && chaosHas(c, 'AFTERIMAGE') && c.phase === 'warning';
+  // Cosmetic styles step aside whenever the trail carries gameplay meaning (Afterimage).
+  if (style !== 'classic' && !warning && !isActive(s, 'AFTERIMAGE')) {
+    drawCosmeticTrail(ctx, s, style, t);
+    return;
+  }
 
   ctx.beginPath();
   let started = false;
@@ -717,6 +723,38 @@ function drawTrail(ctx: CanvasRenderingContext2D, s: GameState): void {
       ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
     } else continue;
     ctx.fill();
+  }
+}
+
+function drawCosmeticTrail(ctx: CanvasRenderingContext2D, s: GameState, style: string, t: number): void {
+  const pts = s.trail.filter((p) => s.time - p.t <= 0.5);
+  pts.push({ x: s.player.x, y: s.player.y, t: s.time } as (typeof s.trail)[number]);
+  if (pts.length < 2) return;
+  ctx.lineCap = 'round';
+  if (style === 'beads') {
+    for (let i = 0; i < pts.length - 1; i += 2) {
+      const a = 1 - (s.time - pts[i].t) / 0.5;
+      ctx.beginPath();
+      ctx.arc(pts[i].x, pts[i].y, 2 + 4 * a, 0, Math.PI * 2);
+      ctx.fillStyle = neon(0.45 * a);
+      ctx.fill();
+    }
+    return;
+  }
+  for (let i = 1; i < pts.length; i++) {
+    const a = 1 - (s.time - pts[i].t) / 0.5;
+    ctx.beginPath();
+    ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+    ctx.lineTo(pts[i].x, pts[i].y);
+    if (style === 'prism') {
+      ctx.strokeStyle = `hsla(${(t * 120 + i * 14) % 360}, 90%, 65%, ${0.35 * a})`;
+      ctx.lineWidth = PLAYER_HALF * (0.4 + 0.6 * a);
+    } else {
+      // comet
+      ctx.strokeStyle = neon(0.4 * a);
+      ctx.lineWidth = PLAYER_HALF * 1.3 * a;
+    }
+    ctx.stroke();
   }
 }
 
@@ -894,6 +932,16 @@ function drawPlayer(ctx: CanvasRenderingContext2D, s: GameState, shape: ShapeId,
 }
 
 function drawParticles(ctx: CanvasRenderingContext2D, fx: Fx): void {
+  for (const rg of fx.rings) {
+    if (rg.life > rg.max) continue;
+    ctx.beginPath();
+    ctx.arc(rg.x, rg.y, rg.r, 0, Math.PI * 2);
+    ctx.strokeStyle = rg.color;
+    ctx.globalAlpha = Math.max(0, rg.life / rg.max);
+    ctx.lineWidth = 6;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
   for (const pt of fx.particles) {
     const a = pt.life / pt.max;
     ctx.fillStyle = pt.color ?? (pt.accent ? acc(a) : text(a * 0.6));

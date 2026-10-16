@@ -39,11 +39,13 @@ import {
   type RunSummary,
   type Settings,
 } from './progress';
+import { TRAILS, VICTORIES, equipped } from './progression';
 import { IconButton, PauseIcon, PlayIcon, SoundToggle } from './ui/common';
 import { Collection, SettingsScreen, Tutorial } from './ui/Menus';
 import { GameOverScreen, PausedScreen, VictoryScreen, type Result } from './ui/Results';
 import { HomeScreen, LevelMap, ModesScreen, PremiumScreen, RecordsScreen, SplashScreen } from './ui/Lobby';
 import { LobbyBackground } from './ui/LobbyBackground';
+import { ProfileScreen } from './ui/Profile';
 import { AdsContext } from './ui/AdSlot';
 import { ADS_CONFIG, AdFrequency, maybeShowInterstitial } from './monetization/ads';
 import { resolvePremiumStatus, type PremiumStatus } from './monetization/entitlements';
@@ -55,6 +57,7 @@ type Screen =
   | 'modes'
   | 'collection'
   | 'records'
+  | 'profile'
   | 'settings'
   | 'premium'
   | 'tutorial'
@@ -63,7 +66,7 @@ type Screen =
   | 'over'
   | 'won';
 
-const LOBBY: ReadonlySet<Screen> = new Set(['splash', 'home', 'levels', 'modes', 'collection', 'records', 'settings', 'premium', 'tutorial']);
+const LOBBY: ReadonlySet<Screen> = new Set(['splash', 'home', 'levels', 'modes', 'collection', 'records', 'profile', 'settings', 'premium', 'tutorial']);
 
 type RGB = [number, number, number];
 const CYAN: RGB = [79, 227, 240];
@@ -221,7 +224,11 @@ export default function App() {
   const [phaseBanner, setPhaseBanner] = useState<{ key: number; name: string; hint: string; index: number; count: number } | null>(null);
   const [isTouch] = useState(() => matches('(pointer: coarse)'));
   const isTouchRef = useRef(isTouch);
-  const [reducedMotion] = useState(() => matches('(prefers-reduced-motion: reduce)'));
+  const [systemReducedMotion] = useState(() => matches('(prefers-reduced-motion: reduce)'));
+  const motionPref = progress.settings.reducedMotion;
+  const reducedMotion = motionPref === 'reduced' || (motionPref === 'system' && systemReducedMotion);
+  const reducedMotionRef = useRef(reducedMotion);
+  reducedMotionRef.current = reducedMotion;
   const overAtRef = useRef(0);
   const multFloorRef = useRef(1);
   const lastAttemptRef = useRef(new Map<string, number>());
@@ -265,6 +272,17 @@ export default function App() {
   useEffect(() => {
     sfxRef.current.setMuted(settings.muted);
   }, [settings.muted]);
+
+  useEffect(() => {
+    sfxRef.current.setVolumes(settings.sfxVolume, settings.musicVolume);
+  }, [settings.sfxVolume, settings.musicVolume]);
+
+  // Accessibility preferences apply to the whole document (menus and overlays alike).
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle('reduce-motion', reducedMotion);
+    root.classList.toggle('high-contrast', settings.highContrast);
+  }, [reducedMotion, settings.highContrast]);
 
   // Mobile browsers only allow audio to start inside a real gesture, and may suspend it later
   // (backgrounding, calls, other apps). Every tap, click or key press retries until it runs.
@@ -616,7 +634,7 @@ export default function App() {
         }
         break;
       case 'victory':
-        fx.confetti(ARENA / 2, ARENA / 2, 60, [glow, '#FF4FD8', '#4FE3F0', '#FFD54A', '#F3F0EA']);
+        fx.victory(equipped(VICTORIES, progressRef.current.settings.victory, progressRef.current.xp), ARENA / 2, ARENA / 2, [glow, '#FF4FD8', '#4FE3F0', '#FFD54A', '#F3F0EA']);
         sfx.play('win');
         break;
     }
@@ -657,7 +675,7 @@ export default function App() {
         case 'Escape':
           if (s === 'playing') pause();
           else if (s === 'paused') resume();
-          else if (s === 'levels' || s === 'modes' || s === 'collection' || s === 'records' || s === 'settings' || s === 'premium') setScreen('home');
+          else if (s === 'levels' || s === 'modes' || s === 'collection' || s === 'records' || s === 'profile' || s === 'settings' || s === 'premium') setScreen('home');
           break;
         case 'KeyR':
           if (s === 'paused' || ((s === 'over' || s === 'won') && canAct())) retry();
@@ -803,7 +821,8 @@ export default function App() {
           shape: st.shape,
           motif: run.motif,
           heat: run.heat,
-          shake: st.shake && !reducedMotion,
+          shake: st.shake && !reducedMotionRef.current,
+          trail: equipped(TRAILS, st.trail, progressRef.current.xp),
         };
         drawGame(ctx, g, sizeRef.current, dprRef.current, now / 1000, fx, look);
       }
@@ -811,7 +830,7 @@ export default function App() {
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, [endRun, handleEvent, reducedMotion]);
+  }, [endRun, handleEvent]);
 
   // ---------- Touch joystick ----------
 
@@ -1079,6 +1098,7 @@ export default function App() {
               onRecords={() => setScreen('records')}
               onSettings={() => setScreen('settings')}
               onPremium={() => setScreen('premium')}
+              onProfile={() => setScreen('profile')}
               onTutorial={() => {
                 pendingRunRef.current = null;
                 setScreen('tutorial');
@@ -1111,11 +1131,14 @@ export default function App() {
               progress={progress}
               onShape={(shape) => changeSettings({ shape })}
               onTheme={(id) => changeSettings({ theme: id })}
+              onTrail={(trail) => changeSettings({ trail })}
+              onVictory={(victory) => changeSettings({ victory })}
               onPremium={() => setScreen('premium')}
               onBack={() => setScreen('home')}
             />
           )}
           {screen === 'records' && <RecordsScreen progress={progress} onBack={() => setScreen('home')} />}
+          {screen === 'profile' && <ProfileScreen progress={progress} account={null} onBack={() => setScreen('home')} />}
           {screen === 'settings' && (
             <SettingsScreen
               settings={settings}

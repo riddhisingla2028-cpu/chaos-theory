@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import type { DeathCause, GameStats } from '../game/engine';
 import { STAGES, TRIALS, endlessMode, objectiveText, starThresholds } from '../game/stages';
 import { SKIP_AFTER_FAILS, isEndlessMode, nextUnlockHint, type ModeBest, type Progress, type RunOutcome, type RunSummary } from '../progress';
+import { levelFromXp } from '../progression';
 import { AdSlot } from './AdSlot';
 import { Overlay, Stars } from './common';
 
@@ -78,21 +79,61 @@ function StatRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+/** What the run earned: XP (itemised), level progress, challenges, achievements and unlocks. */
 function Rewards({ outcome }: { outcome: RunOutcome }) {
+  const before = levelFromXp(outcome.xpBefore);
+  const after = levelFromXp(outcome.xpBefore + outcome.xpGained);
+  const levelled = after.level > before.level;
   const items = [
+    ...(levelled ? [{ key: 'lvl', kind: 'Level up', name: `Account level ${after.level}` }] : []),
+    ...outcome.challengesCompleted.map((c) => ({ key: `c-${c.def.id}`, kind: c.scope === 'daily' ? 'Daily challenge' : 'Weekly challenge', name: c.def.text })),
     ...outcome.newAchievements.map((a) => ({ key: `a-${a.id}`, kind: 'Achievement', name: a.name })),
     ...outcome.newUnlocks.map((u) => ({ key: `u-${u.kind}-${u.id}`, kind: u.kind === 'shape' ? 'New skin' : 'New theme', name: u.name })),
+    ...outcome.newCosmetics.map((c) => ({ key: `k-${c}`, kind: 'Unlocked', name: c })),
   ];
-  if (items.length === 0) return null;
+  const fill = after.need ? after.into / after.need : 1;
+  const from = levelled ? 0 : before.need ? before.into / before.need : 1;
   return (
-    <ul className="rewards">
-      {items.map((it, i) => (
-        <li key={it.key} style={{ animationDelay: `${0.6 + i * 0.12}s` }}>
-          <span className="reward-kind">{it.kind}</span>
-          <span className="reward-name">{it.name}</span>
-        </li>
-      ))}
-    </ul>
+    <section className="earned" aria-label="Rewards earned">
+      <div className="earned-head">
+        <span className="earned-xp">+{outcome.xpGained} XP</span>
+        <span className="earned-level">
+          Level {after.level}
+          {after.need > 0 && (
+            <span className="dim">
+              {' '}
+              · {after.into}/{after.need}
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="xp-bar" aria-hidden="true">
+        <span style={{ '--from': from, '--to': fill } as CSSProperties} />
+      </div>
+      {outcome.xpLines.length > 0 && (
+        <details className="xp-lines">
+          <summary>Where the XP came from</summary>
+          <ul>
+            {outcome.xpLines.map((l, i) => (
+              <li key={i}>
+                <span>{l.label}</span>
+                <span>+{l.xp}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {items.length > 0 && (
+        <ul className="rewards">
+          {items.map((it, i) => (
+            <li key={it.key} style={{ animationDelay: `${0.6 + i * 0.12}s` }}>
+              <span className="reward-kind">{it.kind}</span>
+              <span className="reward-name">{it.name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
