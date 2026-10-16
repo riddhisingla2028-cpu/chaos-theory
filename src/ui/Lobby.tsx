@@ -84,8 +84,8 @@ export function HomeScreen(props: {
   onSettings: () => void;
   onPremium: () => void;
   onProfile: () => void;
+  onMultiplayer: () => void;
   onTutorial: () => void;
-  extraTiles?: ReactNode;
 }) {
   const p = props.progress;
   const next = nextStage(p);
@@ -143,7 +143,7 @@ export function HomeScreen(props: {
           <ModeTile title="Endless Modes" meta="4 modes · always unlocked" glyph="infinity" onClick={props.onModes} featured />
           <ModeTile title="Daily" meta={`${props.daily.mutator.name}${props.daily.best ? ` · ${props.daily.best.toLocaleString()}` : ''}`} glyph="sun" onClick={props.onDaily} />
           <ModeTile title="Trials" meta={p.premiumDemo ? `${TRIALS.length} bonus challenges` : 'Chaos+'} glyph="bolt" onClick={props.onTrials} badge={!p.premiumDemo ? 'Plus' : undefined} />
-          {props.extraTiles}
+          <ModeTile title="Multiplayer" meta="Private rooms · 2–6 players" glyph="players" onClick={props.onMultiplayer} wide />
         </section>
 
         <button type="button" className="today" onClick={props.onProfile}>
@@ -202,6 +202,13 @@ function Glyph({ name }: { name: string }) {
         </g>
       )}
       {name === 'bolt' && <path {...common} d="M18 3L8 18h7l-2 11 10-15h-7z" />}
+      {name === 'players' && (
+        <g {...common}>
+          <circle cx="11" cy="11" r="4" />
+          <circle cx="22" cy="13" r="3.2" />
+          <path d="M4 26c0-5 3.5-8 7-8s7 3 7 8M17 25c.5-3.5 2.6-6 5-6s4.6 2.2 5 6" />
+        </g>
+      )}
       {name === 'orb' && <path {...common} d="M16 4l7 12-7 12-7-12z" />}
       {name === 'chaos' && <path {...common} d="M6 10h12l-4-4M26 22H14l4 4M6 22c6 0 8-12 20-12" />}
       {name === 'core' && (
@@ -214,9 +221,9 @@ function Glyph({ name }: { name: string }) {
   );
 }
 
-function ModeTile({ title, meta, glyph, onClick, badge, featured }: { title: string; meta: string; glyph: string; onClick: () => void; badge?: string; featured?: boolean }) {
+function ModeTile({ title, meta, glyph, onClick, badge, featured, wide }: { title: string; meta: string; glyph: string; onClick: () => void; badge?: string; featured?: boolean; wide?: boolean }) {
   return (
-    <button type="button" className={`mode-tile${featured ? ' mode-tile-featured' : ''}`} onClick={onClick}>
+    <button type="button" className={`mode-tile${featured ? ' mode-tile-featured' : ''}${wide ? ' mode-tile-wide' : ''}`} onClick={onClick}>
       <span className="mode-glyph">
         <Glyph name={glyph} />
       </span>

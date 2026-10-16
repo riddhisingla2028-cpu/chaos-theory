@@ -46,6 +46,7 @@ import { GameOverScreen, PausedScreen, VictoryScreen, type Result } from './ui/R
 import { HomeScreen, LevelMap, ModesScreen, PremiumScreen, RecordsScreen, SplashScreen } from './ui/Lobby';
 import { LobbyBackground } from './ui/LobbyBackground';
 import { ProfileScreen } from './ui/Profile';
+import { MultiplayerScreen, inviteCodeFromUrl } from './ui/Multiplayer';
 import { AccountPanel, GuestOnlyNotice } from './ui/AccountPanel';
 import { AccountService, CLOUD_CONFIG, createSupabaseClient, type AccountState, type CloudClient } from './cloud/account';
 import { AdsContext } from './ui/AdSlot';
@@ -60,6 +61,7 @@ type Screen =
   | 'collection'
   | 'records'
   | 'profile'
+  | 'multiplayer'
   | 'settings'
   | 'premium'
   | 'tutorial'
@@ -68,7 +70,7 @@ type Screen =
   | 'over'
   | 'won';
 
-const LOBBY: ReadonlySet<Screen> = new Set(['splash', 'home', 'levels', 'modes', 'collection', 'records', 'profile', 'settings', 'premium', 'tutorial']);
+const LOBBY: ReadonlySet<Screen> = new Set(['splash', 'home', 'levels', 'modes', 'collection', 'records', 'profile', 'multiplayer', 'settings', 'premium', 'tutorial']);
 
 type RGB = [number, number, number];
 const CYAN: RGB = [79, 227, 240];
@@ -226,6 +228,8 @@ export default function App() {
   const [phaseBanner, setPhaseBanner] = useState<{ key: number; name: string; hint: string; index: number; count: number } | null>(null);
   const [isTouch] = useState(() => matches('(pointer: coarse)'));
   const isTouchRef = useRef(isTouch);
+  const [inviteCode] = useState(inviteCodeFromUrl);
+  const inviteCodeRef = useRef(inviteCode);
   const [systemReducedMotion] = useState(() => matches('(prefers-reduced-motion: reduce)'));
   const motionPref = progress.settings.reducedMotion;
   const reducedMotion = motionPref === 'reduced' || (motionPref === 'system' && systemReducedMotion);
@@ -378,11 +382,12 @@ export default function App() {
     if (LOBBY.has(prev) && LOBBY.has(next) && prev !== next && prev !== 'splash') sfxRef.current.play('whoosh');
   }, []);
 
-  // Menu music: on in the lobby, off in game.
+  // Menu music: on in the lobby, off in game (multiplayer matches included).
   // The engine starts the loop once audio is actually running and never runs two at once.
+  const [mpPlaying, setMpPlaying] = useState(false);
   useEffect(() => {
-    sfxRef.current.setAmbient(LOBBY.has(screen) && screen !== 'splash' && settings.music && !settings.muted);
-  }, [screen, settings.music, settings.muted]);
+    sfxRef.current.setAmbient(LOBBY.has(screen) && screen !== 'splash' && !(screen === 'multiplayer' && mpPlaying) && settings.music && !settings.muted);
+  }, [screen, mpPlaying, settings.music, settings.muted]);
 
   // Subtle hover/click feedback on every button (mouse only for hover).
   useEffect(() => {
@@ -755,7 +760,8 @@ export default function App() {
     if (screenRef.current !== 'splash') return;
     const sfx = sfxRef.current;
     if (!progressRef.current.settings.muted) void sfx.unlock().then(() => sfx.play('boot'));
-    setScreen('home');
+    // An invite link (?room=CODE) goes straight to Multiplayer with the code filled in.
+    setScreen(inviteCodeRef.current ? 'multiplayer' : 'home');
   }
 
   // Ask before leaving or refreshing the page in the middle of a real run.
@@ -1142,6 +1148,7 @@ export default function App() {
               onSettings={() => setScreen('settings')}
               onPremium={() => setScreen('premium')}
               onProfile={() => setScreen('profile')}
+              onMultiplayer={() => setScreen('multiplayer')}
               onTutorial={() => {
                 pendingRunRef.current = null;
                 setScreen('tutorial');
@@ -1181,6 +1188,15 @@ export default function App() {
             />
           )}
           {screen === 'records' && <RecordsScreen progress={progress} onBack={() => setScreen('home')} />}
+          {screen === 'multiplayer' && (
+            <MultiplayerScreen
+              shape={settings.shape}
+              isTouch={isTouch}
+              initialCode={inviteCode}
+              onBack={() => setScreen('home')}
+              onInMatch={setMpPlaying}
+            />
+          )}
           {screen === 'profile' && (
             <ProfileScreen
               progress={progress}

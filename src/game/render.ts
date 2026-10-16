@@ -962,3 +962,128 @@ function drawPopups(ctx: CanvasRenderingContext2D, fx: Fx): void {
     ctx.fillText(pop.text, pop.x, pop.y);
   }
 }
+
+// ---------- Multiplayer ----------
+
+/** Distinct, colour-blind-friendlier player colours; each player also keeps their own shape and name tag. */
+export const MP_COLORS: [number, number, number][] = [
+  [79, 227, 240],
+  [255, 79, 216],
+  [255, 213, 74],
+  [91, 240, 138],
+  [155, 123, 255],
+  [255, 140, 66],
+];
+
+export interface MatchRenderData {
+  time: number;
+  arena: ArenaDef;
+  players: { id: string; name: string; shape: string; color: number; x: number; y: number; alive: boolean; connected: boolean; grace: number }[];
+  hazards: { x: number; y: number; r: number; seek: boolean }[];
+  orbs: { x: number; y: number }[];
+  me: string;
+}
+
+export function drawMatch(ctx: CanvasRenderingContext2D, d: MatchRenderData, sizePx: number, dpr: number, t: number): void {
+  accentRgb = [255, 90, 90];
+  glowRgb = [79, 227, 240];
+  const scale = sizePx / ARENA;
+  const px = 1 / scale;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+  const a = d.arena;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, ARENA, ARENA);
+  ctx.clip();
+  drawVoidBackdrop(ctx, t);
+  ctx.save();
+  groundPath(ctx, a, d.time);
+  ctx.fillStyle = '#121216';
+  ctx.fill();
+  ctx.clip();
+  drawMotif(ctx, 'grid', t, px);
+  ctx.restore();
+  drawFloorEdges(ctx, a, d.time, t, px);
+  drawWalls(ctx, a, d.time, px);
+  drawRotors(ctx, a, d.time, t);
+
+  for (const o of d.orbs) {
+    const pulse = 1 + Math.sin(t * 5 + o.x) * 0.12;
+    ctx.save();
+    ctx.translate(o.x, o.y);
+    ctx.rotate(Math.PI / 4);
+    ctx.shadowColor = 'rgba(255, 213, 74, 0.9)';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = '#FFD54A';
+    const r = 9 * pulse;
+    ctx.fillRect(-r, -r, r * 2, r * 2);
+    ctx.restore();
+  }
+
+  for (const h of d.hazards) {
+    ctx.save();
+    ctx.shadowColor = acc(0.8);
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(h.x, h.y, h.r, 0, Math.PI * 2);
+    ctx.fillStyle = acc(0.92);
+    ctx.fill();
+    if (h.seek) {
+      // Seekers wear a ring so the chase is readable without relying on colour.
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = acc(0.6);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, h.r + 6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  for (const p of d.players) {
+    if (!p.connected) continue;
+    const [r, g, b] = MP_COLORS[p.color % MP_COLORS.length];
+    const col = (al: number) => `rgba(${r}, ${g}, ${b}, ${al})`;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    if (p.id === d.me) {
+      // A ring marks you among the other players.
+      ctx.strokeStyle = col(0.5);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 24, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    tracePlayer(ctx, p.shape as ShapeId, PLAYER_HALF);
+    if (!p.alive) {
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = col(0.6);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      ctx.globalAlpha = p.grace > 0 && Math.floor(t * 10) % 2 === 0 ? 0.45 : 1;
+      ctx.shadowColor = col(0.9);
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = col(1);
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.font = '600 22px Inter, ui-sans-serif, system-ui, sans-serif';
+    ctx.fillStyle = p.alive ? text(0.85) : text(0.4);
+    ctx.fillText(p.id === d.me ? `${p.name} (you)` : p.name, p.x, p.y - 22);
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.lineWidth = 2 * px;
+  ctx.shadowBlur = 18;
+  ctx.shadowColor = neon(0.7);
+  ctx.strokeStyle = neon(0.45);
+  ctx.strokeRect(px, px, ARENA - 2 * px, ARENA - 2 * px);
+  ctx.restore();
+}
