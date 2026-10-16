@@ -20,3 +20,6 @@ npm-debug.log*
 # Hosting
 .vercel
 .netlify
+
+# Keep the documented template
+!.env.example

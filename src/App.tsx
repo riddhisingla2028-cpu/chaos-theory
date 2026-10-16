@@ -46,6 +46,8 @@ import { GameOverScreen, PausedScreen, VictoryScreen, type Result } from './ui/R
 import { HomeScreen, LevelMap, ModesScreen, PremiumScreen, RecordsScreen, SplashScreen } from './ui/Lobby';
 import { LobbyBackground } from './ui/LobbyBackground';
 import { ProfileScreen } from './ui/Profile';
+import { AccountPanel, GuestOnlyNotice } from './ui/AccountPanel';
+import { AccountService, CLOUD_CONFIG, createSupabaseClient, type AccountState, type CloudClient } from './cloud/account';
 import { AdsContext } from './ui/AdSlot';
 import { ADS_CONFIG, AdFrequency, maybeShowInterstitial } from './monetization/ads';
 import { resolvePremiumStatus, type PremiumStatus } from './monetization/entitlements';
@@ -307,10 +309,45 @@ export default function App() {
     };
   }, []);
 
+  // Accounts and cloud saves: only when this build is configured for them (see src/cloud/account.ts).
+  const accountRef = useRef<AccountService | null>(null);
+  const [account, setAccount] = useState<AccountState | null>(null);
+  const cloudExpected = !!CLOUD_CONFIG || (import.meta.env.DEV && !!(window as unknown as { __chaosFakeCloud?: unknown }).__chaosFakeCloud);
+  useEffect(() => {
+    const devFake = import.meta.env.DEV ? (window as unknown as { __chaosFakeCloud?: CloudClient }).__chaosFakeCloud : undefined;
+    if (!CLOUD_CONFIG && !devFake) return;
+    let cancelled = false;
+    let unsub: (() => void) | null = null;
+    const local = {
+      get: () => progressRef.current,
+      // Writes merged progress from the cloud; does not schedule another sync.
+      set: (p: Progress) => {
+        progressRef.current = p;
+        setProgressState(p);
+        saveProgress(p);
+      },
+    };
+    void (devFake ? Promise.resolve(devFake) : createSupabaseClient(CLOUD_CONFIG!))
+      .then((client) => {
+        if (cancelled) return;
+        const svc = new AccountService(client, local, window.location.origin + window.location.pathname);
+        accountRef.current = svc;
+        unsub = svc.subscribe(setAccount);
+        return svc.start();
+      })
+      .catch(() => setAccount({ status: 'guest', email: null, verified: false, sync: 'error', lastSynced: null, message: 'Accounts are unavailable right now. Playing as a guest.' }));
+    return () => {
+      cancelled = true;
+      unsub?.();
+      accountRef.current?.stop();
+    };
+  }, []);
+
   const updateProgress = useCallback((next: Progress) => {
     progressRef.current = next;
     setProgressState(next);
     saveProgress(next);
+    accountRef.current?.scheduleSync();
   }, []);
 
   const changeSettings = useCallback(
@@ -651,6 +688,12 @@ export default function App() {
       if (s === 'splash') {
         e.preventDefault();
         enterFromSplash();
+        return;
+      }
+      // Typing in a form field (account sign-in, room code, name) must never trigger game shortcuts.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) && (t as HTMLInputElement).type !== 'range') {
+        if (e.code === 'Escape') t.blur();
         return;
       }
       if (input.handleKey(e.code, true) && s === 'playing') e.preventDefault();
@@ -1138,7 +1181,13 @@ export default function App() {
             />
           )}
           {screen === 'records' && <RecordsScreen progress={progress} onBack={() => setScreen('home')} />}
-          {screen === 'profile' && <ProfileScreen progress={progress} account={null} onBack={() => setScreen('home')} />}
+          {screen === 'profile' && (
+            <ProfileScreen
+              progress={progress}
+              account={account && accountRef.current ? <AccountPanel state={account} service={accountRef.current} /> : cloudExpected ? <p className="account-text">Checking your account…</p> : <GuestOnlyNotice />}
+              onBack={() => setScreen('home')}
+            />
+          )}
           {screen === 'settings' && (
             <SettingsScreen
               settings={settings}

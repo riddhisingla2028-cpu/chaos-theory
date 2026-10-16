@@ -3714,3 +3714,98 @@ kbd {
     font-size: 44px;
   }
 }
+
+/* Account panel */
+
+.account {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+}
+
+.account-on {
+  border-color: color-mix(in srgb, var(--neon) 40%, transparent);
+}
+
+.account-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.account-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.account-sync {
+  margin: 0;
+  font-size: 12px;
+  color: var(--neon);
+}
+
+.account-sync-error {
+  color: #ffb547;
+}
+
+.account-tabs {
+  margin-top: 12px;
+}
+
+.account-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.account-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.account-form input {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgba(5, 5, 7, 0.7);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px; /* 16px stops iOS zooming into the field */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.account-form input:focus-visible {
+  outline: 2px solid var(--neon);
+  outline-offset: 1px;
+}
+
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.account-message {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.link-btn {
+  min-height: 32px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--neon);
+  text-decoration: underline;
+  cursor: pointer;
+}
