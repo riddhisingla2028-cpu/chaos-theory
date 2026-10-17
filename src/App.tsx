@@ -906,6 +906,7 @@ export default function App() {
           heat: run.heat,
           shake: st.shake && !reducedMotionRef.current,
           trail: equipped(TRAILS, st.trail, progressRef.current.xp, hasVerifiedChaosPlus()),
+          ship: equippedShip(progressRef.current),
         };
         drawGame(ctx, g, sizeRef.current, dprRef.current, now / 1000, fx, look);
       }

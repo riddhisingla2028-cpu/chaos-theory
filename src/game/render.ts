@@ -21,6 +21,7 @@ import {
 import type { Fx } from './fx';
 import { floorState, rotorAngle, rotorArmed, wallAt, type ArenaDef } from './arenas';
 import { arenaTime } from './engine';
+import { HULLS, type ShipId } from '../mission/render';
 import { shapePoints } from './shapes';
 import type { Motif } from './stages';
 import type { ShapeId } from '../progress';
@@ -34,6 +35,7 @@ export interface Look {
   heat: number; // 0..1 accent vignette strength for the level
   shake: boolean;
   trail?: string; // cosmetic trail style (TrailId)
+  ship?: ShipId; // equipped spacecraft hull
 }
 
 const TEXT = '#F3F0EA';
@@ -74,11 +76,15 @@ export function drawGame(
   ctx.clip();
   // The void: anything that is not floor.
   drawVoidBackdrop(ctx, t);
-  // The ground the player can stand on, with the level's pattern clipped to it.
+  drawSpace(ctx, t);
+  // The ground the player can stand on, with the level's pattern clipped to it. Slightly
+  // translucent, so deep space shows faintly through the deck.
   ctx.save();
   groundPath(ctx, arena, at);
+  ctx.globalAlpha = 0.86;
   ctx.fillStyle = look.arena;
   ctx.fill();
+  ctx.globalAlpha = 1;
   ctx.clip();
   drawMotif(ctx, look.motif, t, px);
   drawHeat(ctx, look.heat);
@@ -96,7 +102,7 @@ export function drawGame(
   drawBoss(ctx, s, t, px);
   drawHazards(ctx, s, t);
   drawParticles(ctx, fx);
-  drawPlayer(ctx, s, look.shape, t);
+  drawPlayer(ctx, s, look.shape, t, look.ship ?? 'arrow');
   drawPopups(ctx, fx);
   if (isActive(s, 'GLITCH')) drawDistortion(ctx, t);
   if (fx.flash > 0) {
@@ -113,6 +119,30 @@ export function drawGame(
   ctx.strokeStyle = s.chaos?.phase === 'active' ? acc(0.75) : neon(0.45);
   ctx.strokeRect(px, px, ARENA - 2 * px, ARENA - 2 * px);
   ctx.restore();
+}
+
+// ---------- Space backdrop ----------
+
+const STARS = Array.from({ length: 160 }, (_, i) => {
+  const r = (n: number) => (Math.sin(i * 12.9898 + n * 78.233) * 43758.5453) % 1;
+  const f = (n: number) => Math.abs(r(n));
+  return { x: f(1) * ARENA, y: f(2) * ARENA, z: 0.25 + f(3) * 0.75, tw: f(4) * 6.28 };
+});
+
+/** Stars drifting slowly at different depths, and a nebula in the level colour. */
+function drawSpace(ctx: CanvasRenderingContext2D, t: number): void {
+  const n = ctx.createRadialGradient(ARENA * 0.72, ARENA * 0.28, 20, ARENA * 0.72, ARENA * 0.28, ARENA * 0.7);
+  n.addColorStop(0, neon(0.1));
+  n.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = n;
+  ctx.fillRect(0, 0, ARENA, ARENA);
+  for (const st of STARS) {
+    const y = (st.y + t * 6 * st.z) % ARENA;
+    const a = 0.25 + 0.55 * st.z * (0.7 + 0.3 * Math.sin(t * 2 + st.tw));
+    ctx.fillStyle = `rgba(243, 240, 234, ${a})`;
+    const sz = 0.8 + st.z * 1.8;
+    ctx.fillRect(st.x, y, sz, sz);
+  }
 }
 
 // ---------- Arena geometry ----------
@@ -846,12 +876,31 @@ function drawHazards(ctx: CanvasRenderingContext2D, s: GameState, t: number): vo
     const fading = h.blink ? 0.45 : 1;
     if (h.kind === 'drifter') {
       ctx.save();
-      ctx.shadowColor = acc(0.8);
-      ctx.shadowBlur = 10;
+      // An asteroid: a dark, jagged rock with a hot rim. Its radius is the collision radius.
+      ctx.translate(h.x, h.y);
+      ctx.rotate(h.age * (0.6 + (h.id % 5) * 0.15) * (h.id % 2 ? 1 : -1));
       ctx.beginPath();
-      ctx.arc(h.x, h.y, h.r, 0, Math.PI * 2);
-      ctx.fillStyle = acc(0.92 * fading);
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        const rr = h.r * (0.86 + 0.14 * Math.sin(k * 2.3 + h.id * 1.7));
+        if (k === 0) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+        else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+      }
+      ctx.closePath();
+      ctx.fillStyle = `rgba(36, 22, 20, ${0.95 * fading})`;
       ctx.fill();
+      ctx.shadowColor = acc(0.9);
+      ctx.shadowBlur = 12;
+      ctx.strokeStyle = acc(0.95 * fading);
+      ctx.lineWidth = 2.6;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = acc(0.35 * fading);
+      ctx.beginPath();
+      ctx.arc(-h.r * 0.25, -h.r * 0.2, h.r * 0.22, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.save();
       if (h.weave) {
         // Weavers wear a wobbling outer ring so their side-to-side motion is expected.
         ctx.shadowBlur = 0;
@@ -897,11 +946,21 @@ function tracePlayer(ctx: CanvasRenderingContext2D, shape: ShapeId, r: number): 
   ctx.closePath();
 }
 
-function drawPlayer(ctx: CanvasRenderingContext2D, s: GameState, shape: ShapeId, t: number): void {
+// The player is a spacecraft: it turns smoothly towards its direction of travel, banks, and
+// fires its engine in proportion to speed. Its hit circle (PLAYER_HIT_RADIUS) is the hull's core.
+let shipAngle = -Math.PI / 2;
+const SHIP_SCALE = 0.72;
+
+function drawPlayer(ctx: CanvasRenderingContext2D, s: GameState, shape: ShapeId, t: number, ship: ShipId): void {
   const p = s.player;
   const speed = Math.hypot(p.vx, p.vy);
-  const heading = Math.atan2(p.vy, p.vx);
-  const stretch = 1 + Math.min(0.22, (speed / 380) * 0.18);
+  if (speed > 25) {
+    let diff = Math.atan2(p.vy, p.vx) - shipAngle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    shipAngle += diff * 0.25;
+  }
+  if (s.time < 0.05) shipAngle = -Math.PI / 2;
   const phantom = isActive(s, 'PHANTOM') && s.status === 'playing';
 
   ctx.save();
@@ -918,27 +977,64 @@ function drawPlayer(ctx: CanvasRenderingContext2D, s: GameState, shape: ShapeId,
     }
     ctx.globalAlpha = 0.05;
   }
-  // Squash and stretch along the direction of travel.
-  ctx.rotate(heading);
-  ctx.scale(stretch, 1 / stretch);
-  ctx.rotate(-heading + Math.max(-0.35, Math.min(0.35, p.vx * 0.0009)));
-  tracePlayer(ctx, shape, PLAYER_HALF);
-  if (s.status === 'over') {
+  ctx.rotate(shipAngle);
+  const lateral = (-p.vx * Math.sin(shipAngle) + p.vy * Math.cos(shipAngle)) / 380;
+  ctx.scale(SHIP_SCALE, SHIP_SCALE * (1 - Math.min(0.22, Math.abs(lateral) * 0.22)));
+  const dead = s.status === 'over';
+  // Engine flame
+  if (!dead) {
+    const flame = 8 + Math.min(1, speed / 380) * 26 + Math.sin(t * 40) * 3;
+    const fg = ctx.createLinearGradient(-12, 0, -12 - flame, 0);
+    fg.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+    fg.addColorStop(0.3, neon(0.9));
+    fg.addColorStop(1, 'rgba(255, 79, 216, 0)');
+    ctx.fillStyle = fg;
+    ctx.beginPath();
+    ctx.moveTo(-10, -6);
+    ctx.lineTo(-12 - flame, 0);
+    ctx.lineTo(-10, 6);
+    ctx.closePath();
+    ctx.fill();
+  }
+  const pts = HULLS[ship] ?? HULLS.arrow;
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+  ctx.closePath();
+  if (dead) {
     ctx.strokeStyle = acc(1);
     ctx.lineWidth = 3;
     ctx.stroke();
-  } else {
+  } else if (isActive(s, 'INVERSION')) {
+    // Hollow hull signals that controls are inverted.
     ctx.shadowColor = neon(0.9);
-    ctx.shadowBlur = 22 + Math.sin(t * 4) * 4;
-    if (isActive(s, 'INVERSION')) {
-      // Hollow shape signals that controls are inverted.
-      ctx.strokeStyle = TEXT;
-      ctx.lineWidth = 4;
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = TEXT;
-      ctx.fill();
-    }
+    ctx.shadowBlur = 20;
+    ctx.strokeStyle = TEXT;
+    ctx.lineWidth = 3.5;
+    ctx.stroke();
+  } else {
+    const hg = ctx.createLinearGradient(-16, -20, 26, 20);
+    hg.addColorStop(0, '#1b2440');
+    hg.addColorStop(1, '#33447a');
+    ctx.fillStyle = hg;
+    ctx.shadowColor = neon(0.9);
+    ctx.shadowBlur = 20 + Math.sin(t * 4) * 4;
+    ctx.fill();
+    ctx.strokeStyle = TEXT;
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    // Cockpit
+    ctx.fillStyle = 'rgba(232, 251, 255, 0.95)';
+    ctx.beginPath();
+    ctx.ellipse(5, 0, 8, 4.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // The chosen emblem (skin) on the hull
+    ctx.save();
+    ctx.translate(-6, 0);
+    tracePlayer(ctx, shape, 3.2);
+    ctx.fillStyle = neon(0.95);
+    ctx.fill();
+    ctx.restore();
   }
   ctx.restore();
 }
@@ -996,6 +1092,8 @@ export interface MatchRenderData {
   me: string;
 }
 
+const mpHeading = new Map<string, { x: number; y: number; a: number }>();
+
 export function drawMatch(ctx: CanvasRenderingContext2D, d: MatchRenderData, sizePx: number, dpr: number, t: number): void {
   accentRgb = [255, 90, 90];
   glowRgb = [79, 227, 240];
@@ -1034,14 +1132,23 @@ export function drawMatch(ctx: CanvasRenderingContext2D, d: MatchRenderData, siz
     ctx.restore();
   }
 
-  for (const h of d.hazards) {
+  for (const [hi, h] of d.hazards.entries()) {
     ctx.save();
+    ctx.beginPath();
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2 + t * 0.5 * (hi % 2 ? 1 : -1);
+      const rr = h.r * (0.86 + 0.14 * Math.sin(k * 2.3 + hi));
+      if (k === 0) ctx.moveTo(h.x + Math.cos(a) * rr, h.y + Math.sin(a) * rr);
+      else ctx.lineTo(h.x + Math.cos(a) * rr, h.y + Math.sin(a) * rr);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(36, 22, 20, 0.95)';
+    ctx.fill();
     ctx.shadowColor = acc(0.8);
     ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.arc(h.x, h.y, h.r, 0, Math.PI * 2);
-    ctx.fillStyle = acc(0.92);
-    ctx.fill();
+    ctx.strokeStyle = acc(0.95);
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
     if (h.seek) {
       // Seekers wear a ring so the chase is readable without relying on colour.
       ctx.shadowBlur = 0;
@@ -1070,20 +1177,55 @@ export function drawMatch(ctx: CanvasRenderingContext2D, d: MatchRenderData, siz
       ctx.arc(0, 0, 24, 0, Math.PI * 2);
       ctx.stroke();
     }
-    tracePlayer(ctx, p.shape as ShapeId, PLAYER_HALF);
+    // Each player flies a spacecraft in their colour, turned towards where they are going.
+    const prev = mpHeading.get(p.id);
+    let ang = prev?.a ?? -Math.PI / 2;
+    if (prev && Math.hypot(p.x - prev.x, p.y - prev.y) > 0.8) {
+      let diff = Math.atan2(p.y - prev.y, p.x - prev.x) - ang;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      ang += diff * 0.3;
+    }
+    mpHeading.set(p.id, { x: p.x, y: p.y, a: ang });
+    ctx.save();
+    ctx.rotate(ang);
+    ctx.scale(SHIP_SCALE, SHIP_SCALE);
+    if (p.alive) {
+      ctx.fillStyle = col(0.75);
+      ctx.beginPath();
+      ctx.moveTo(-10, -5);
+      ctx.lineTo(-24 - Math.sin(t * 40) * 3, 0);
+      ctx.lineTo(-10, 5);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.beginPath();
+    HULLS.arrow.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
     if (!p.alive) {
       ctx.setLineDash([4, 4]);
       ctx.strokeStyle = col(0.6);
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2.5;
       ctx.stroke();
       ctx.setLineDash([]);
     } else {
       ctx.globalAlpha = p.grace > 0 && Math.floor(t * 10) % 2 === 0 ? 0.45 : 1;
+      ctx.fillStyle = '#1b2440';
       ctx.shadowColor = col(0.9);
       ctx.shadowBlur = 18;
+      ctx.fill();
+      ctx.strokeStyle = col(1);
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.save();
+      ctx.translate(-4, 0);
+      tracePlayer(ctx, p.shape as ShapeId, 4);
       ctx.fillStyle = col(1);
       ctx.fill();
+      ctx.restore();
     }
+    ctx.restore();
     ctx.restore();
     ctx.font = '600 22px Inter, ui-sans-serif, system-ui, sans-serif';
     ctx.fillStyle = p.alive ? text(0.85) : text(0.4);

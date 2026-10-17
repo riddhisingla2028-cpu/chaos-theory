@@ -576,12 +576,14 @@ export interface ShipDef {
 }
 
 const missionDone = (p: Progress, i: number) => !!p.missions[MISSIONS[i].id]?.completed;
+/** Unlocks are tied to mission ids, so reordering the campaign never takes a ship away. */
+const missionIdDone = (p: Progress, id: MissionId) => !!p.missions[id]?.completed;
 
 /** Spacecraft hulls. Purely cosmetic: every hull has the same size, speed and hit circle. */
 export const SHIPS: readonly ShipDef[] = [
   { id: 'arrow', name: 'Arrow', req: 'Default', unlocked: () => true },
-  { id: 'interceptor', name: 'Interceptor', req: 'Complete Mission 02', unlocked: (p) => missionDone(p, 1) },
-  { id: 'manta', name: 'Manta', req: 'Complete Mission 04', unlocked: (p) => missionDone(p, 3) },
+  { id: 'interceptor', name: 'Interceptor', req: 'Complete Shattered Orbit', unlocked: (p) => missionIdDone(p, 'shattered-orbit') },
+  { id: 'manta', name: 'Manta', req: 'Complete Orbital Collapse', unlocked: (p) => missionIdDone(p, 'collapse') },
   { id: 'phantom', name: 'Phantom', req: 'Chaos+', premium: true, unlocked: () => hasVerifiedChaosPlus() },
 ];
 
@@ -590,7 +592,8 @@ export const equippedShip = (p: Progress): ShipId => {
   return s && s.unlocked(p) ? s.id : 'arrow';
 };
 
-export const isMissionUnlocked = (p: Progress, i: number) => i === 0 || missionDone(p, i - 1);
+/** Open if it is the first, the previous one is complete, or the player has already flown it (so reordering never locks anyone out). */
+export const isMissionUnlocked = (p: Progress, i: number) => i === 0 || missionDone(p, i - 1) || !!p.missions[MISSIONS[i].id];
 export const missionsCompleted = (p: Progress) => MISSIONS.filter((m) => p.missions[m.id]?.completed).length;
 /** The mission to play next: the first one not yet completed (or the last, once all are done). */
 export const nextMission = (p: Progress) => {

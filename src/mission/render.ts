@@ -22,6 +22,8 @@ const ORANGE: RGB = [255, 140, 66];
 const RED: RGB = [255, 72, 88];
 const GOLD: RGB = [255, 213, 74];
 const WHITE: RGB = [243, 240, 234];
+const ALIEN: RGB = [214, 92, 255]; // alien raiders: violet-magenta, distinct from your cyan and the red/orange of hazards
+const FRIEND: RGB = [91, 240, 138]; // friendly ships
 
 /** Per-run render memory: engine trail and star field. */
 export interface RenderMemory {
@@ -61,16 +63,21 @@ export function drawMission(ctx: CanvasRenderingContext2D, m: MissionState, mem:
   ctx.save();
   ctx.translate(-m.camX, -m.camY);
   drawGrid(ctx, m, accent, t);
+  drawGravity(ctx, m, t);
   drawCollapse(ctx, m, t);
   drawPulses(ctx, m);
   drawReactors(ctx, m, t);
   drawGates(ctx, m, t);
   drawPortal(ctx, m, t);
+  drawRescueZone(ctx, m, t);
   drawWalls(ctx, m, accent, px);
   drawBarriers(ctx, m, t);
   drawCores(ctx, m, t);
   drawChronoPickup(ctx, m, t);
+  drawPowerPickup(ctx, m, t);
+  drawPods(ctx, m, t);
   drawRocks(ctx, m);
+  drawAllies(ctx, m, t);
   drawBoss(ctx, m, t);
   drawDrones(ctx, m, t);
   drawBullets(ctx, m);
@@ -79,6 +86,7 @@ export function drawMission(ctx: CanvasRenderingContext2D, m: MissionState, mem:
   drawTrail(ctx, mem, m, look.trail, t);
   drawParticles(ctx, fx);
   if (m.status !== 'lost') drawShip(ctx, m, look.ship, t, chrono);
+  if (m.status === 'playing') drawShipStatus(ctx, m, t, look.reducedMotion);
   drawPopups(ctx, fx);
   ctx.restore();
   drawPointer(ctx, m, t);
@@ -556,11 +564,53 @@ function drawDrones(ctx: CanvasRenderingContext2D, m: MissionState, t: number): 
       ctx.restore();
       continue;
     }
-    const face = Math.atan2(m.ship.y - d.y, m.ship.x - d.x);
-    const col: RGB = d.hitFlash > 0 ? WHITE : RED;
-    ctx.shadowColor = rgba(RED, 0.9);
+    const prey = (d.targetAlly !== null && m.allies.find((a) => a.id === d.targetAlly && !a.destroyed)) || m.ship;
+    const face = Math.atan2(prey.y - d.y, prey.x - d.x);
+    const col: RGB = d.hitFlash > 0 ? WHITE : d.kind === 'raider' ? ALIEN : RED;
+    ctx.shadowColor = rgba(d.kind === 'raider' ? ALIEN : RED, 0.9);
     ctx.shadowBlur = 14;
-    if (d.kind === 'scout') {
+    if (d.kind === 'raider') {
+      // Alien raider: a swept crescent with a glowing heart, pointed at its target.
+      ctx.rotate(Math.atan2(d.vy, d.vx) || face);
+      ctx.beginPath();
+      ctx.moveTo(20, 0);
+      ctx.quadraticCurveTo(-4, 4, -16, 18);
+      ctx.quadraticCurveTo(-6, 4, -10, 0);
+      ctx.quadraticCurveTo(-6, -4, -16, -18);
+      ctx.quadraticCurveTo(-4, -4, 20, 0);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(30, 8, 34, 0.95)';
+      ctx.fill();
+      ctx.strokeStyle = rgba(col, 0.95);
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.fillStyle = rgba(col, 0.9);
+      ctx.beginPath();
+      ctx.arc(2, 0, 4, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (d.kind === 'turret') {
+      // Defence turret: an armoured base with a barrel tracking the ship.
+      ctx.fillStyle = 'rgba(40, 14, 18, 0.95)';
+      ctx.strokeStyle = rgba(col, 0.95);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
+        if (i === 0) ctx.moveTo(Math.cos(a) * 24, Math.sin(a) * 24);
+        else ctx.lineTo(Math.cos(a) * 24, Math.sin(a) * 24);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.rotate(Math.atan2(m.ship.y - d.y, m.ship.x - d.x));
+      ctx.fillStyle = rgba(col, 0.9);
+      ctx.fillRect(4, -5, 26, 10);
+      const charge = d.aim > 0 ? 1 - d.aim / 0.6 : 0;
+      ctx.fillStyle = rgba(d.aim > 0 ? ORANGE : RED, 0.6 + 0.4 * charge);
+      ctx.beginPath();
+      ctx.arc(0, 0, 7 + charge * 6, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (d.kind === 'scout') {
       ctx.rotate(face);
       ctx.beginPath();
       ctx.moveTo(18, 0);
@@ -592,14 +642,15 @@ function drawDrones(ctx: CanvasRenderingContext2D, m: MissionState, t: number): 
       ctx.fill();
     }
     ctx.restore();
-    if (d.kind === 'gunner' && d.aim > 0) {
-      // Aim line telegraph
+    if ((d.kind === 'gunner' || d.kind === 'turret') && d.aim > 0) {
+      // Aim line telegraph, to whatever it is about to fire at
+      const aimAt = d.kind === 'turret' ? m.ship : prey;
       ctx.setLineDash([6, 8]);
       ctx.strokeStyle = rgba(ORANGE, 0.45);
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(d.x, d.y);
-      ctx.lineTo(m.ship.x, m.ship.y);
+      ctx.lineTo(aimAt.x, aimAt.y);
       ctx.stroke();
       ctx.setLineDash([]);
     }
@@ -752,6 +803,301 @@ function drawTarget(ctx: CanvasRenderingContext2D, m: MissionState, t: number): 
     ctx.stroke();
   }
   ctx.restore();
+}
+
+// ---------- Friendly ships, pods, pickups, the singularity ----------
+
+/** Friendly ships have distinct silhouettes and a hull bar; they flash when hit and burn when low. */
+function drawAllies(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
+  for (const a of m.allies) {
+    if (a.destroyed) continue;
+    const wp = a.path[a.pathIdx];
+    const ang = wp ? Math.atan2(wp.y - a.y, wp.x - a.x) : -Math.PI / 2;
+    const low = a.hp / a.maxHp < 0.35;
+    const edge: RGB = a.hitFlash > 0 ? WHITE : FRIEND;
+    ctx.save();
+    ctx.translate(a.x, a.y);
+    // Jump drive charge ring (The Last Jump)
+    if (m.jump && a.kind === 'capital') {
+      const k = m.jump.charge / m.jump.duration;
+      ctx.strokeStyle = rgba(VIOLET, 0.25);
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.arc(0, 0, a.r + 22, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = rgba(VIOLET, 0.95);
+      ctx.shadowColor = rgba(VIOLET, 1);
+      ctx.shadowBlur = 18;
+      ctx.beginPath();
+      ctx.arc(0, 0, a.r + 22, -Math.PI / 2, -Math.PI / 2 + k * Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+    ctx.rotate(ang);
+    const L = a.r * 1.25;
+    const W = a.r * (a.kind === 'capital' ? 1.15 : a.kind === 'cargo' ? 0.7 : 0.55);
+    // Engine glow
+    ctx.fillStyle = rgba(FRIEND, 0.5 + 0.2 * Math.sin(t * 20));
+    ctx.beginPath();
+    ctx.moveTo(-L * 0.9, -W * 0.35);
+    ctx.lineTo(-L * 1.25 - Math.sin(t * 30) * 4, 0);
+    ctx.lineTo(-L * 0.9, W * 0.35);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    if (a.kind === 'cargo') {
+      // A hauler: cab plus three containers
+      ctx.rect(-L * 0.9, -W * 0.5, L * 1.3, W);
+      ctx.moveTo(L * 0.4, -W * 0.35);
+      ctx.lineTo(L * 0.85, 0);
+      ctx.lineTo(L * 0.4, W * 0.35);
+    } else if (a.kind === 'capital') {
+      // A long wedge with flanking hangars
+      ctx.moveTo(L, 0);
+      ctx.lineTo(L * 0.2, -W * 0.45);
+      ctx.lineTo(-L * 0.9, -W * 0.7);
+      ctx.lineTo(-L * 0.9, W * 0.7);
+      ctx.lineTo(L * 0.2, W * 0.45);
+    } else {
+      // Transport / frigate: an elongated hull with swept fins
+      ctx.moveTo(L, 0);
+      ctx.lineTo(L * 0.3, -W * 0.45);
+      ctx.lineTo(-L * 0.6, -W * 0.5);
+      ctx.lineTo(-L * 0.9, -W * (a.kind === 'frigate' ? 1 : 0.8));
+      ctx.lineTo(-L * 0.8, 0);
+      ctx.lineTo(-L * 0.9, W * (a.kind === 'frigate' ? 1 : 0.8));
+      ctx.lineTo(-L * 0.6, W * 0.5);
+      ctx.lineTo(L * 0.3, W * 0.45);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(18, 40, 32, 0.95)';
+    ctx.fill();
+    ctx.shadowColor = rgba(FRIEND, 0.8);
+    ctx.shadowBlur = 14;
+    ctx.strokeStyle = rgba(edge, 0.95);
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    if (a.kind === 'cargo') {
+      ctx.strokeStyle = rgba(FRIEND, 0.4);
+      ctx.lineWidth = 1.5;
+      for (let k = 1; k < 3; k++) {
+        ctx.beginPath();
+        ctx.moveTo(-L * 0.9 + (L * 1.3 * k) / 3, -W * 0.5);
+        ctx.lineTo(-L * 0.9 + (L * 1.3 * k) / 3, W * 0.5);
+        ctx.stroke();
+      }
+    }
+    // Bridge lights
+    ctx.fillStyle = rgba(WHITE, 0.8);
+    ctx.fillRect(L * 0.1, -2, 8, 4);
+    ctx.restore();
+    // Fire and smoke when badly damaged
+    if (low) {
+      for (let k = 0; k < 3; k++) {
+        const ph = (t * 1.5 + k / 3) % 1;
+        ctx.fillStyle = `rgba(255, ${120 + k * 40}, 60, ${0.6 * (1 - ph)})`;
+        ctx.beginPath();
+        ctx.arc(a.x + Math.sin(k * 2 + t) * a.r * 0.4, a.y - ph * 30, 4 + ph * 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // Name and hull bar
+    const bw = Math.max(60, a.r * 1.6);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(a.x - bw / 2, a.y - a.r - 20, bw, 5);
+    ctx.fillStyle = rgba(a.hp / a.maxHp > 0.5 ? FRIEND : a.hp / a.maxHp > 0.25 ? GOLD : RED, 0.95);
+    ctx.fillRect(a.x - bw / 2, a.y - a.r - 20, (bw * a.hp) / a.maxHp, 5);
+    ctx.fillStyle = rgba(FRIEND, 0.85);
+    ctx.font = '600 13px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(a.name, a.x, a.y - a.r - 26);
+  }
+}
+
+function drawRescueZone(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
+  const z = m.rescueZone;
+  if (!z) return;
+  ctx.save();
+  ctx.translate(z.x, z.y);
+  ctx.setLineDash([12, 10]);
+  ctx.lineDashOffset = -t * 30;
+  ctx.strokeStyle = rgba(FRIEND, 0.75);
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(0, 0, z.r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = rgba(FRIEND, 0.06);
+  ctx.fill();
+  // The rescue ship's open bay
+  ctx.fillStyle = 'rgba(18, 40, 32, 0.95)';
+  ctx.strokeStyle = rgba(FRIEND, 0.9);
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(-70, 60);
+  ctx.lineTo(-40, 20);
+  ctx.lineTo(40, 20);
+  ctx.lineTo(70, 60);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = rgba(FRIEND, 0.9);
+  ctx.font = '700 12px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('RESCUE BAY', 0, -z.r - 10);
+  ctx.restore();
+}
+
+function drawPods(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
+  let leader: { x: number; y: number } = m.ship;
+  for (const p of m.pods) {
+    if (p.state === 'saved') continue;
+    if (p.state === 'towed') {
+      // Tractor tether
+      ctx.strokeStyle = `rgba(150, 210, 255, ${0.5 + 0.3 * Math.sin(t * 12)})`;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 5]);
+      ctx.beginPath();
+      ctx.moveTo(leader.x, leader.y);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      leader = p;
+    }
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(Math.sin(t + p.id) * 0.4);
+    ctx.fillStyle = '#d9e2f0';
+    ctx.strokeStyle = rgba(CYAN, 0.9);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 11, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(20, 40, 70, 0.9)';
+    ctx.beginPath();
+    ctx.ellipse(0, -4, 6, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Distress beacon
+    if (p.state === 'drifting' && Math.floor(t * 3 + p.id) % 2 === 0) {
+      ctx.fillStyle = rgba(GOLD, 0.95);
+      ctx.beginPath();
+      ctx.arc(0, -19, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = rgba(GOLD, 0.4);
+      ctx.beginPath();
+      ctx.arc(0, 0, 26 + ((t * 30) % 20), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+const POWER_LOOK = {
+  shield: { col: [120, 200, 255] as RGB, label: 'S' },
+  overdrive: { col: ORANGE, label: '»' },
+  repair: { col: FRIEND, label: '+' },
+} as const;
+
+function drawPowerPickup(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
+  const p = m.power.pickup;
+  if (!p) return;
+  const look = POWER_LOOK[p.kind];
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.globalAlpha = Math.min(1, p.life / 1.5) * (p.life < 2 && Math.floor(t * 8) % 2 === 0 ? 0.4 : 1);
+  ctx.rotate(t * 1.2);
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    if (i === 0) ctx.moveTo(Math.cos(a) * 18, Math.sin(a) * 18);
+    else ctx.lineTo(Math.cos(a) * 18, Math.sin(a) * 18);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(10, 14, 24, 0.9)';
+  ctx.fill();
+  ctx.shadowColor = rgba(look.col, 1);
+  ctx.shadowBlur = 16;
+  ctx.strokeStyle = rgba(look.col, 0.95);
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  ctx.rotate(-t * 1.2);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = rgba(look.col, 1);
+  ctx.font = '800 18px Unbounded, Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(look.label, 0, 1);
+  ctx.restore();
+}
+
+function drawGravity(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
+  const g = m.gravity;
+  if (!g) return;
+  ctx.save();
+  ctx.translate(g.x, g.y);
+  // Accretion disk: tilted rings spinning into the hole
+  for (let k = 0; k < 4; k++) {
+    ctx.strokeStyle = `rgba(${200 + k * 10}, ${120 - k * 20}, 255, ${0.35 - k * 0.06})`;
+    ctx.lineWidth = 6 - k;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, g.horizon * (2.4 + k * 0.9), g.horizon * (0.9 + k * 0.35), t * (0.3 + k * 0.1), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  // Lensing glow and the event horizon
+  const lens = ctx.createRadialGradient(0, 0, g.horizon, 0, 0, g.horizon * 3.2);
+  lens.addColorStop(0, 'rgba(255, 180, 255, 0.35)');
+  lens.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = lens;
+  ctx.beginPath();
+  ctx.arc(0, 0, g.horizon * 3.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(0, 0, g.horizon, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = rgba(MAGENTA, m.escaping ? 0.9 : 0.55);
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Shield bubble, overdrive glow and damage smoke on the player's ship. */
+function drawShipStatus(ctx: CanvasRenderingContext2D, m: MissionState, t: number, reducedMotion: boolean): void {
+  const s = m.ship;
+  if (m.power.shield) {
+    ctx.strokeStyle = `rgba(120, 200, 255, ${0.55 + 0.25 * Math.sin(t * 5)})`;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 30, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(120, 200, 255, 0.07)';
+    ctx.fill();
+  }
+  if (m.power.overdrive > 0) {
+    ctx.strokeStyle = rgba(ORANGE, 0.6);
+    ctx.lineWidth = 2;
+    ctx.setLineDash([3, 6]);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 24, t * 4, t * 4 + Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (s.hp === 1 && !reducedMotion) {
+    // Critical hull: trailing smoke and sparks
+    for (let k = 0; k < 4; k++) {
+      const ph = (t * 2 + k / 4) % 1;
+      ctx.fillStyle = `rgba(90, 90, 100, ${0.45 * (1 - ph)})`;
+      ctx.beginPath();
+      ctx.arc(s.x - Math.cos(s.angle) * (14 + ph * 30), s.y - Math.sin(s.angle) * (14 + ph * 30), 3 + ph * 7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (Math.floor(t * 12) % 3 === 0) {
+      ctx.fillStyle = rgba(GOLD, 0.9);
+      ctx.fillRect(s.x + Math.sin(t * 50) * 8, s.y + Math.cos(t * 43) * 8, 3, 3);
+    }
+  }
 }
 
 // ---------- Ship ----------

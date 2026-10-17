@@ -5441,3 +5441,106 @@ a.play-now {
     letter-spacing: 0.06em;
   }
 }
+
+/* Mission HUD: friendly ships, power-ups, chains; results medal and tip */
+.m-status {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.m-ally {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #b9f5cf;
+}
+.m-ally-bar {
+  width: 54px;
+  height: 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.m-ally-bar > span {
+  display: block;
+  height: 100%;
+  background: #5bf08a;
+  transform-origin: left;
+  transition: transform 0.15s;
+}
+.m-ally.low .m-ally-bar > span {
+  background: #ff6b78;
+}
+.m-ally.down {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+.m-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.m-chip-shield {
+  color: #9fd3ff;
+}
+.m-chip-od {
+  color: #ff9a5c;
+}
+.m-chip-chain {
+  color: #ffd54a;
+}
+.m-chip-bar {
+  width: 36px;
+  height: 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+.m-chip-bar > span {
+  display: block;
+  height: 100%;
+  background: currentColor;
+  transform-origin: left;
+}
+.m-medal {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+}
+.m-medal-name {
+  font-family: var(--display);
+  font-size: 12px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+.medal-1 {
+  color: #d99a5c;
+}
+.medal-2 {
+  color: #cfd8e3;
+}
+.medal-3 {
+  color: #ffd54a;
+  text-shadow: 0 0 14px rgba(255, 213, 74, 0.6);
+}
+.m-tip {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  text-align: left;
+}
+.m-launch {
+  pointer-events: auto;
+  cursor: pointer;
+}

@@ -66,9 +66,19 @@ describe('mission progression', () => {
     p = applyMission(p, result()).progress;
     const o = applyMission(p, result({ id: 'shattered-orbit' }));
     expect(o.newShips).toEqual(['Interceptor spacecraft']);
+    // Unlocks follow mission ids, so changing the campaign order never takes a ship away.
+    expect(SHIPS.find((s) => s.id === 'interceptor')!.unlocked(o.progress)).toBe(true);
     // An equipped hull that is not unlocked falls back to the default.
     const q = { ...defaultProgress(), settings: { ...defaultProgress().settings, ship: 'manta' as const } };
     expect(equippedShip(q)).toBe('arrow');
+  });
+
+  it('a mission already flown stays open even if the campaign order changes around it', () => {
+    let p = defaultProgress();
+    p = applyMission(p, result({ id: 'shattered-orbit', won: true })).progress; // e.g. completed under the old order
+    const i = MISSIONS.findIndex((m) => m.id === 'shattered-orbit');
+    expect(isMissionUnlocked(p, i)).toBe(true);
+    expect(isMissionUnlocked(p, 1)).toBe(false); // nothing else is opened for free
   });
 
   it('older saves (before missions) load with their progress intact and no missions', () => {

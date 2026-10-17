@@ -57,9 +57,10 @@ function hold(m: MissionState, seconds: number): void {
 const make = (id: MissionId, seed = 7) => createMission(missionById(id), seed);
 
 describe('mission catalogue', () => {
-  it('has six missions with distinct objectives and two optional objectives each', () => {
-    expect(MISSIONS.map((m) => m.id)).toEqual(['first-contact', 'shattered-orbit', 'breach-protocol', 'collapse', 'meltdown', 'guardian']);
-    expect(new Set(MISSIONS.map((m) => m.objective)).size).toBe(6);
+  it('has ten missions with distinct objectives and two optional objectives each', () => {
+    expect(MISSIONS.map((m) => m.id)).toEqual(['first-contact', 'alien-pursuit', 'rescue', 'shattered-orbit', 'collapse', 'meltdown', 'breach-protocol', 'convoy', 'last-jump', 'guardian']);
+    expect(MISSIONS.map((m) => m.code)).toEqual(['01', '02', '03', '04', '05', '06', '07', '08', '09', '10']);
+    expect(new Set(MISSIONS.map((m) => m.objective)).size).toBe(10);
     for (const m of MISSIONS) expect(m.secondaries).toHaveLength(2);
   });
 
@@ -177,12 +178,14 @@ describe('Mission 03 · Breach Protocol (combat)', () => {
     expect(m.events.length + m.bullets.length).toBeGreaterThan(0);
   });
 
-  it('destroying all ten drones (three waves) wins; nothing is awarded earlier', () => {
+  it('destroying all twelve attackers (three waves) while the frigate survives wins; nothing is awarded earlier', () => {
     const m = make('breach-protocol');
     const end = 150;
+    const frigate = m.allies[0];
     while (m.status === 'playing' && m.realTime < end) {
       m.ship.invuln = 5; // scripted pilot: survive to test the objective logic
-      const target = m.drones.filter((d) => d.spawnIn === 0).sort((a, b) => Math.hypot(a.x - m.ship.x, a.y - m.ship.y) - Math.hypot(b.x - m.ship.x, b.y - m.ship.y))[0];
+      // Defend the frigate first: go for whatever is closest to it.
+      const target = m.drones.filter((d) => d.spawnIn === 0).sort((a, b) => Math.hypot(a.x - frigate.x, a.y - frigate.y) - Math.hypot(b.x - frigate.x, b.y - frigate.y))[0];
       let inp = { x: 0, y: 0 };
       if (target) {
         const dx = target.x - m.ship.x;
@@ -190,10 +193,12 @@ describe('Mission 03 · Breach Protocol (combat)', () => {
         const d = Math.hypot(dx, dy);
         inp = d > 260 ? { x: dx / d, y: dy / d } : { x: -dy / d, y: dx / d };
       }
-      if (m.kills < 10) expect(m.status).toBe('playing');
+      if (m.cleared < 12) expect(m.status).toBe('playing');
       stepMission(m, inp, DT);
     }
-    expect(m.kills).toBe(10);
+    expect(m.cleared).toBe(12);
+    expect(m.kills).toBeGreaterThanOrEqual(8); // most were shot down by the blaster
+    expect(frigate.destroyed).toBe(false);
     expect(m.status).toBe('won');
   });
 
@@ -201,7 +206,7 @@ describe('Mission 03 · Breach Protocol (combat)', () => {
     const m = make('breach-protocol');
     m.drones = [];
     m.waves = [];
-    m.drones.push({ id: 50, kind: 'gunner', x: 500, y: 300, vx: 0, vy: 0, hp: 5, maxHp: 5, fireIn: 0, aim: 0, hitFlash: 0, spawnIn: 0 });
+    m.drones.push({ id: 50, kind: 'gunner', x: 500, y: 300, vx: 0, vy: 0, hp: 5, maxHp: 5, fireIn: 0, aim: 0, hitFlash: 0, spawnIn: 0, targetAlly: null });
     m.killsNeeded = 99;
     stepMission(m, { x: 0, y: 0 }, DT);
     expect(m.drones[0].aim).toBeGreaterThan(0);
@@ -306,19 +311,36 @@ describe('Mission 06 · The Guardian', () => {
     expect(opened).toBe(true);
   });
 
-  it('a pilot who stays in range through the vulnerable windows destroys it and wins', () => {
+  it('destroying the Guardian starts the escape; reaching the portal (not the kill) wins', () => {
     const m = make('guardian');
     let phases = 0;
-    while (m.status === 'playing' && m.realTime < 160) {
+    while (m.status === 'playing' && !m.escaping && m.realTime < 160) {
       m.ship.invuln = 5;
       const dx = m.boss!.x - m.ship.x;
-      const inp = { x: Math.abs(dx) > 30 ? Math.sign(dx) : 0, y: m.ship.y < 560 ? 1 : m.ship.y > 620 ? -1 : 0 };
+      const inp = { x: Math.abs(dx) > 30 ? Math.sign(dx) : 0, y: m.ship.y < 600 ? 1 : m.ship.y > 660 ? -1 : 0 };
       stepMission(m, inp, DT);
       phases += m.events.filter((e) => e.type === 'boss-phase').length;
     }
-    expect(m.status).toBe('won');
     expect(phases).toBe(2);
-    expect(m.boss!.dying).toBeGreaterThan(0);
+    expect(m.escaping).toBe(true);
+    expect(m.status).toBe('playing'); // not won yet
+    expect(m.portal!.open).toBe(true);
+    while (m.status === 'playing' && m.realTime < 200) {
+      const dx = m.portal!.x - m.ship.x;
+      const dy = m.portal!.y - m.ship.y;
+      const d = Math.hypot(dx, dy) || 1;
+      stepMission(m, { x: dx / d, y: dy / d }, DT);
+    }
+    expect(m.status).toBe('won');
+  });
+
+  it('lingering during the escape is fatal: the event horizon grows and swallows the ship', () => {
+    const m = make('guardian');
+    m.boss!.hp = 0;
+    m.ship.invuln = 99;
+    for (let i = 0; i < 60 * 40 && m.status === 'playing'; i++) stepMission(m, { x: 0, y: 0 }, DT);
+    expect(m.status).toBe('lost');
+    expect(m.failReason).toMatch(/event horizon/);
   });
 });
 

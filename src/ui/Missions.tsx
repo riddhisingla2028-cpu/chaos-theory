@@ -3,7 +3,7 @@ import { Fx } from '../game/fx';
 import { Input } from '../game/input';
 import type { Sfx } from '../game/audio';
 import { createRenderMemory, drawMission, type MissionLook } from '../mission/render';
-import { CHRONO_DURATION, MISSIONS, createMission, objectiveView, secondariesMet, starsFor, stepMission, type MissionEvent, type MissionState } from '../mission/sim';
+import { CHRONO_DURATION, MISSIONS, OVERDRIVE_TIME, comboMult, createMission, objectiveView, secondariesMet, starsFor, stepMission, type MissionEvent, type MissionState } from '../mission/sim';
 import { isMissionUnlocked, missionsCompleted, nextMission, type MissionOutcome, type MissionResult, type Progress } from '../progress';
 import { levelFromXp } from '../progression';
 import { AdSlot } from './AdSlot';
@@ -143,7 +143,8 @@ function Briefing({ progress: p, i, isTouch, onLaunch, onBack }: { progress: Pro
           <ul className="brief-tips">
             <li>{isTouch ? 'Drag anywhere to fly.' : 'Fly with WASD or the arrow keys. P or Esc pauses.'}</li>
             <li>Hull: {m.maxHp} hits. {m.weapons ? 'Your blaster locks on and fires automatically at targets in range.' : 'No weapons on this mission: avoid everything red or orange.'}</li>
-            <li>Watch for the rare CHRONO SHIFT pickup: it slows everything except your ship for a few seconds.</li>
+            <li>Watch for the rare CHRONO SHIFT pickup (it slows everything but you) and for shield, overdrive and repair cells.</li>
+            <li>Shoot down enemies in quick succession to build a score chain up to x4.</li>
           </ul>
           {rec?.completed && (
             <p className="brief-record">
@@ -174,6 +175,10 @@ interface Hud {
   score: number;
   chrono: number;
   boss: { hp: number; max: number; shielded: boolean } | null;
+  shield: boolean;
+  overdrive: number;
+  chain: number;
+  allies: { id: number; name: string; frac: number; down: boolean }[];
 }
 
 function hudOf(m: MissionState): Hud {
@@ -185,7 +190,11 @@ function hudOf(m: MissionState): Hud {
     timeLeft: m.def.timeLimit !== null ? Math.max(0, m.def.timeLimit - m.time) : null,
     score: m.score,
     chrono: m.chrono.active,
-    boss: m.boss ? { hp: Math.max(0, m.boss.hp), max: m.boss.maxHp, shielded: m.boss.shielded } : null,
+    boss: m.boss && !m.escaping ? { hp: Math.max(0, m.boss.hp), max: m.boss.maxHp, shielded: m.boss.shielded } : null,
+    shield: m.power.shield,
+    overdrive: m.power.overdrive,
+    chain: m.combo.count >= 2 ? comboMult(m.combo.count) : 0,
+    allies: m.allies.map((a) => ({ id: a.id, name: a.name, frac: a.hp / a.maxHp, down: a.destroyed })),
   };
 }
 
@@ -261,6 +270,10 @@ function MissionPlay(props: {
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       if (input.handleKey(e.code, true)) e.preventDefault();
       if (e.repeat) return;
+      if (phaseRef.current === 'launch' && (e.code === 'Space' || e.code === 'Enter')) {
+        setPhase('playing'); // skip the intro
+        return;
+      }
       if (e.code === 'KeyP' || e.code === 'Escape') {
         if (phaseRef.current === 'playing') pause();
         else if (phaseRef.current === 'paused') resume();
@@ -339,7 +352,7 @@ function MissionPlay(props: {
             break;
           case 'explode':
             fx.burst(e.x, e.y, e.big ? 60 : 26, e.big ? 520 : 360, true, e.big ? 9 : 6, e.big ? 1.1 : 0.7);
-            fx.ring(e.x, e.y, 'rgba(255, 140, 66, 0.9)', 0, e.big ? 900 : 600);
+            fx.ring(e.x, e.y, 'rgba(255, 140, 66, 0.9)', 0, e.big ? 700 : 260);
             fx.addShake(e.big ? 22 : 8);
             sfx.play('explode');
             break;
@@ -367,6 +380,51 @@ function MissionPlay(props: {
             fx.ring(e.x, e.y, 'rgba(255, 79, 216, 0.9)', 0, 1300);
             fx.addShake(10);
             sfx.play('chronoOff');
+            break;
+          case 'ally-hit':
+            fx.burst(e.x, e.y, 6, 200, true, 4, 0.4);
+            break;
+          case 'ally-lost':
+            fx.addShake(16);
+            say(`${e.name} is down`);
+            break;
+          case 'pod-tow':
+            fx.ring(e.x, e.y, 'rgba(150, 210, 255, 0.9)', 0, 400);
+            fx.popup(e.x, e.y - 26, 'POD SECURED');
+            sfx.play('orb');
+            break;
+          case 'pod-saved':
+            fx.ring(e.x, e.y, 'rgba(91, 240, 138, 0.9)', 0, 600);
+            fx.popup(e.x, e.y - 26, '+300 RESCUED');
+            sfx.play('unlock');
+            break;
+          case 'power-spawn':
+            say(e.kind === 'shield' ? 'Shield cell nearby' : e.kind === 'overdrive' ? 'Overdrive cell nearby' : 'Repair kit nearby');
+            break;
+          case 'power-on':
+            fx.ring(e.x, e.y, e.kind === 'overdrive' ? 'rgba(255, 140, 66, 0.9)' : e.kind === 'repair' ? 'rgba(91, 240, 138, 0.9)' : 'rgba(120, 200, 255, 0.9)', 0, 600);
+            fx.popup(e.x, e.y - 26, e.kind === 'shield' ? 'SHIELD' : e.kind === 'overdrive' ? 'OVERDRIVE' : 'HULL +1');
+            sfx.play('unlock');
+            break;
+          case 'shield-block':
+            fx.ring(e.x, e.y, 'rgba(120, 200, 255, 0.95)', 0, 500);
+            sfx.play('pass');
+            say('Shield absorbed the hit');
+            break;
+          case 'combo':
+            fx.popup(e.x, e.y - 30, `x${e.mult} CHAIN`, e.count >= 5);
+            sfx.play('combo');
+            break;
+          case 'jump':
+            fx.ring(e.x, e.y, 'rgba(155, 123, 255, 0.95)', 0, 1400);
+            fx.ring(e.x, e.y, 'rgba(255, 255, 255, 0.8)', 0.15, 1200);
+            fx.flash = 0;
+            sfx.play('levelup');
+            break;
+          case 'escape':
+            fx.addShake(26);
+            sfx.play('chaos');
+            say('The singularity is collapsing · ESCAPE SOUTH');
             break;
           case 'won':
             fx.victory(lookRef.current.ship === 'phantom' ? 'supernova' : 'shockwave', mRef.current.ship.x, mRef.current.ship.y, ['#4FE3F0', '#FF4FD8', '#FFD54A', '#F3F0EA']);
@@ -514,6 +572,25 @@ function MissionPlay(props: {
         <div className="m-obj-bar" aria-hidden="true">
           <span style={{ transform: `scaleX(${o.progress})` }} />
         </div>
+        {(hud.allies.length > 0 || hud.shield || hud.overdrive > 0 || hud.chain > 0) && (
+          <div className="m-hud-row m-status">
+            {hud.allies.map((a) => (
+              <span key={a.id} className={`m-ally${a.down ? ' down' : a.frac < 0.35 ? ' low' : ''}`} aria-label={`${a.name} hull ${Math.round(a.frac * 100)}%`}>
+                <span className="m-ally-name">{a.name.replace(/^(Transport|Capital ship|Frigate) /, '')}</span>
+                <span className="m-ally-bar">
+                  <span style={{ transform: `scaleX(${a.down ? 0 : a.frac})` }} />
+                </span>
+              </span>
+            ))}
+            {hud.shield && <span className="m-chip m-chip-shield">Shield</span>}
+            {hud.overdrive > 0 && (
+              <span className="m-chip m-chip-od">
+                Overdrive <span className="m-chip-bar"><span style={{ transform: `scaleX(${hud.overdrive / OVERDRIVE_TIME})` }} /></span>
+              </span>
+            )}
+            {hud.chain > 0 && <span className="m-chip m-chip-chain">x{hud.chain} chain</span>}
+          </div>
+        )}
       </header>
 
       <div className="m-stage" ref={wrapRef} onPointerDown={(e) => joy(e, 'down')} onPointerMove={(e) => joy(e, 'move')} onPointerUp={(e) => joy(e, 'up')} onPointerCancel={(e) => joy(e, 'up')}>
@@ -542,7 +619,7 @@ function MissionPlay(props: {
             </div>
           )}
           {phase === 'launch' && (
-            <div className="m-launch" role="status">
+            <div className="m-launch" role="status" onPointerDown={() => setPhase('playing')}>
               <span className="m-launch-kicker">Mission {def.code}</span>
               <span className="m-launch-name">{def.name}</span>
               <span className="m-launch-obj">{def.objective}</span>
@@ -586,6 +663,24 @@ function MissionPlay(props: {
   );
 }
 
+const MEDALS = ['', 'Bronze', 'Silver', 'Gold'];
+
+/** A short, specific suggestion for the reason the mission failed. */
+export function failTip(reason: string): string {
+  if (/debris/i.test(reason)) return 'Rocks drift in straight lines: watch their heading and pass behind them.';
+  if (/barrier/i.test(reason)) return 'Barriers flicker before they switch on. Wait for the dashed line to go dim.';
+  if (/shot down/i.test(reason)) return 'Gunners glow and draw a dashed line before firing. Move sideways when you see it.';
+  if (/raider|hunter|drone/i.test(reason)) return 'Keep moving: hunters are slower than you. Let the blaster work at range.';
+  if (/destroyed/i.test(reason)) return 'Stay close to the ships you protect and break up raider runs early.';
+  if (/collapse/i.test(reason)) return 'Do not stop for long: the collapse speeds up the longer it runs.';
+  if (/heat pulse/i.test(reason)) return 'Each pulse has a gap. Line up with it before the ring reaches you.';
+  if (/critical|life support|time/i.test(reason)) return 'Plan a route between objectives and skip the long detours.';
+  if (/beam|Guardian/i.test(reason)) return 'A red dashed line means a beam: get off the line before it fires.';
+  if (/horizon/i.test(reason)) return 'Head for the portal the moment the Guardian falls; the pull keeps getting stronger.';
+  if (/turret/i.test(reason)) return 'Turrets do not move. Destroy them from range.';
+  return 'Retry: every mission plays out the same way, so you can learn it.';
+}
+
 function MissionResultPanel(props: {
   def: (typeof MISSIONS)[number];
   result: { r: MissionResult; o: MissionOutcome; reason: string | null };
@@ -613,7 +708,13 @@ function MissionResultPanel(props: {
         <p className="m-kicker">{r.won ? 'Mission complete' : 'Mission failed'}</p>
         <h3 className="m-panel-title">{def.name}</h3>
         {!r.won && reason && <p className="m-reason">{reason}</p>}
-        {r.won && <Stars count={r.stars} animate />}
+        {!r.won && reason && <p className="m-tip">Tip: {failTip(reason)}</p>}
+        {r.won && (
+          <div className="m-medal">
+            <Stars count={r.stars} animate />
+            <span className={`m-medal-name medal-${r.stars}`}>{MEDALS[r.stars]} medal</span>
+          </div>
+        )}
         <div className="m-result-stats">
           <span>
             <span className="m-stat-label">Score</span>
