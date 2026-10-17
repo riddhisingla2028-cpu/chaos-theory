@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
-import { AdFrequency, AD_PLACEMENTS, adsConfigFrom, decideSlot, maybeShowInterstitial, requestRewarded, type AdProvider } from './ads';
+import { AdFrequency, AD_PLACEMENTS, adsConfigFrom, advertiseContactFrom, decideSlot, maybeShowInterstitial, requestRewarded, type AdProvider } from './ads';
 import { adsAllowedFor, resolvePremiumStatus } from './entitlements';
 import { AdSlot, AdsContext } from '../ui/AdSlot';
 import { defaultProgress, setPremiumDemo } from '../progress';
@@ -9,10 +9,11 @@ import { defaultProgress, setPremiumDemo } from '../progress';
 const provider: AdProvider = { id: 'test', renderBanner: async () => true, showInterstitial: async () => 'shown', showRewarded: async () => ({ completed: true }) };
 
 describe('ads configuration', () => {
-  it('is disabled by default: no provider, no live ads, even in production', () => {
+  it('has no live ads by default: no provider, only labelled empty placeholders, even in production', () => {
     const prod = adsConfigFrom({ DEV: false });
     expect(prod.enabled).toBe(false);
-    expect(decideSlot(prod, 'free')).toBe('hidden');
+    expect(decideSlot(prod, 'free')).toBe('placeholder');
+    expect(decideSlot(adsConfigFrom({ DEV: false, VITE_AD_PLACEHOLDERS: 'false' }), 'free')).toBe('hidden');
   });
 
   it('needs both an explicit opt-in AND a configured provider to go live', () => {
@@ -21,14 +22,39 @@ describe('ads configuration', () => {
     expect(adsConfigFrom({ VITE_ADS_ENABLED: 'true' }, provider).enabled).toBe(true);
   });
 
-  it('shows labelled placeholders only in development, and they can be turned off', () => {
+  it('shows labelled placeholders, and they can be turned off', () => {
     expect(decideSlot(adsConfigFrom({ DEV: true }), 'free')).toBe('placeholder');
     expect(decideSlot(adsConfigFrom({ DEV: true, VITE_AD_PLACEHOLDERS: 'false' }), 'free')).toBe('hidden');
   });
 
-  it('defines the four placements with reserved heights', () => {
+  it('defines every placement with reserved sizes', () => {
     expect(Object.keys(AD_PLACEMENTS).sort()).toEqual(['endless_results_banner', 'home_banner', 'level_select_banner', 'profile_banner', 'results_banner']);
-    for (const p of Object.values(AD_PLACEMENTS)) expect(p.height.mobile).toBeGreaterThan(0);
+    for (const p of Object.values(AD_PLACEMENTS)) {
+      expect(p.height.mobile).toBeGreaterThan(0);
+      expect(p.width.mobile).toBeGreaterThan(0);
+    }
+  });
+
+  it('has no placement on the game screen', () => {
+    for (const p of Object.values(AD_PLACEMENTS)) expect(p.id).not.toMatch(/game(play)?/);
+  });
+
+  it('only offers an "Advertise with us" contact when a real email is configured', () => {
+    expect(advertiseContactFrom({})).toBeNull();
+    expect(advertiseContactFrom({ VITE_ADVERTISE_EMAIL: 'not-an-email' })).toBeNull();
+    expect(advertiseContactFrom({ VITE_ADVERTISE_EMAIL: ' ads@example.com ' })).toBe('ads@example.com');
+  });
+
+  it('each placement can be switched off on its own', () => {
+    const cfg = adsConfigFrom({ DEV: false });
+    const before = AD_PLACEMENTS.profile_banner.enabled;
+    AD_PLACEMENTS.profile_banner.enabled = false;
+    try {
+      expect(decideSlot(cfg, 'free', 'profile_banner')).toBe('hidden');
+      expect(decideSlot(cfg, 'free', 'home_banner')).toBe('placeholder');
+    } finally {
+      AD_PLACEMENTS.profile_banner.enabled = before;
+    }
   });
 });
 
@@ -98,16 +124,19 @@ describe('AdSlot component', () => {
   const render = (config: ReturnType<typeof adsConfigFrom>, premium: 'free' | 'premium') =>
     renderToStaticMarkup(createElement(AdsContext.Provider, { value: { config, premium } }, createElement(AdSlot, { placement: 'results_banner' })));
 
-  it('renders nothing when ads are disabled', () => {
-    expect(render(adsConfigFrom({ DEV: false }), 'free')).toBe('');
+  it('renders nothing when placeholders are switched off and no provider exists', () => {
+    expect(render(adsConfigFrom({ DEV: false, VITE_AD_PLACEHOLDERS: 'false' }), 'free')).toBe('');
   });
 
-  it('renders a development placeholder labelled "Advertisement" with its intended size, clearly marked as a placeholder', () => {
+  it('renders a labelled "Your brand here" placeholder with its intended size, no sponsor claims, and loads nothing', () => {
     const html = render(adsConfigFrom({ DEV: true }), 'free');
     expect(html).toContain('>Advertisement<');
-    expect(html).toContain('320 × 50');
-    expect(html).toContain('468 × 60');
-    expect(html).toContain('placeholder, development only');
+    expect(html).toContain('320×50');
+    expect(html).toContain('468×60');
+    expect(html).toContain('Your brand here');
+    expect(html).toContain('Advertise with Chaos Theory');
+    expect(html).not.toMatch(/sponsored by|partner/i);
+    expect(html).not.toContain('mailto:'); // no contact configured, so no link
     expect(html).not.toContain('<iframe');
     expect(html).not.toContain('<script');
   });

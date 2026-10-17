@@ -105,7 +105,8 @@ export function SoundToggle({ muted, audioState, onToggle, onEnable }: { muted: 
       <span className="sound-group">
         <button type="button" className="sound-enable" onClick={onEnable} aria-label="Tap to enable sound">
           <SoundIcon muted={false} />
-          <span>Tap to enable sound</span>
+          <span className="sound-long">Tap to enable sound</span>
+          <span className="sound-short">Sound</span>
         </button>
         <IconButton label="Mute sound" onClick={onToggle}>
           <SoundIcon muted />

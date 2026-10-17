@@ -94,9 +94,29 @@ export function mergeProgress(local: Progress, cloud: Progress): Progress {
           : cloud.daily
       : (local.daily ?? cloud.daily);
 
+  const missions: Progress['missions'] = { ...local.missions };
+  for (const [id, v] of Object.entries(cloud.missions ?? {})) {
+    const cur = missions[id];
+    if (!cur) {
+      missions[id] = v;
+      continue;
+    }
+    const fastest = cur.fastest === null ? v.fastest : v.fastest === null ? cur.fastest : Math.min(cur.fastest, v.fastest);
+    missions[id] = {
+      completed: cur.completed || v.completed,
+      stars: Math.max(cur.stars, v.stars),
+      best: Math.max(cur.best, v.best),
+      fastest,
+      secondaries: cur.secondaries.map((s, i) => s || !!v.secondaries[i]),
+      attempts: Math.max(cur.attempts, v.attempts),
+      failures: Math.max(cur.failures, v.failures),
+    };
+  }
+
   return {
     ...local,
     stages,
+    missions,
     stageTime: maxRecord(local.stageTime, cloud.stageTime),
     stageStats: mergeStageStats(local.stageStats, cloud.stageStats),
     fails: local.fails,

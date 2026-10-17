@@ -1,7 +1,6 @@
-import { useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react';
 
-import type { Look } from '../game/render';
-import { ENDLESS_MODES, STAGES, TRIALS, objectiveText, stageConfig, starThresholds, type EndlessId, type Mutator } from '../game/stages';
+import { ENDLESS_MODES, STAGES, TRIALS, objectiveText, type EndlessId, type Mutator } from '../game/stages';
 import {
   ACHIEVEMENTS,
   SHAPES,
@@ -14,6 +13,9 @@ import {
   nextStage,
   totalStars,
   accountLevel,
+  SHIPS,
+  missionsCompleted,
+  nextMission,
   chaosPlusUnlocked,
   hasVerifiedChaosPlus,
   PREVIEW_AVAILABLE,
@@ -21,14 +23,13 @@ import {
   type RecordEntry,
 } from '../progress';
 import { challengeById, currentChallenges, weekKeyOf } from '../progression';
-import { LevelPreview } from './LevelPreview';
+import { MISSIONS } from '../mission/sim';
 import { AdSlot } from './AdSlot';
 import { LICENSE_MESSAGES, STORE, activateLicense, forgetLicense, type PremiumStatus } from '../monetization/entitlements';
 import type { AudioState } from '../game/audio';
 import { BackButton, LockIcon, ShapePreview, SoundToggle, Stars } from './common';
 
 const rgb = (c: [number, number, number]) => `rgb(${c.join(',')})`;
-const DIFFICULTY = ['', 'Easy', 'Easy', 'Medium', 'Hard', 'Brutal'];
 
 function formatDuration(seconds: number): string {
   const s = Math.floor(seconds);
@@ -50,39 +51,6 @@ export function Pips({ value, max = 5 }: { value: number; max?: number }) {
 
 // ---------- Splash ----------
 
-export function SplashScreen({ isTouch, onEnter, onFriends }: { isTouch: boolean; onEnter: () => void; onFriends: () => void }) {
-  return (
-    // click (not pointerdown): iOS only lets audio start on touchend/click, so this tap unlocks sound.
-    <div className="screen splash" onClick={onEnter} role="button" tabIndex={0} aria-label="Play free now">
-      <div className="splash-inner">
-        <p className="eyebrow">Free browser arcade game · no download · no sign-up</p>
-        <h1 className="logo logo-xl" data-text="CHAOS THEORY">
-          <span>CHAOS</span>
-          <span>THEORY</span>
-        </h1>
-        <p className="splash-pitch">Dodge, survive and adapt while the rules rewrite themselves every few seconds.</p>
-        <ul className="splash-points">
-          <li>10 arenas and a boss fight</li>
-          <li>Private rooms with up to 6 friends</li>
-          <li>Phone or desktop, in seconds</li>
-        </ul>
-        <p className="press">{isTouch ? 'Tap anywhere to play free' : 'Click or press any key to play free'}</p>
-        <button
-          type="button"
-          className="btn btn-small splash-friends"
-          onClick={(e) => {
-            e.stopPropagation();
-            onFriends();
-          }}
-        >
-          Play with friends →
-        </button>
-        <p className="splash-foot">Best with sound on</p>
-      </div>
-    </div>
-  );
-}
-
 // ---------- Home ----------
 
 export function HomeScreen(props: {
@@ -93,7 +61,9 @@ export function HomeScreen(props: {
   isTouch: boolean;
   onToggleSound: () => void;
   onEnableSound: () => void;
-  onPlay: () => void;
+  onContinue: () => void;
+  onNewMission: () => void;
+  onHangar: () => void;
   onLevels: () => void;
   onModes: () => void;
   onDaily: () => void;
@@ -107,71 +77,77 @@ export function HomeScreen(props: {
   onTutorial: () => void;
 }) {
   const p = props.progress;
-  const next = nextStage(p);
   const cleared = levelsCleared(p);
-  const nextDef = next >= 0 ? STAGES[next] : null;
-  const playSub = nextDef ? `Level ${next + 1} · ${nextDef.name} · ${nextDef.arena.name}` : 'Campaign complete · play Endless';
+  const done = missionsCompleted(p);
+  const nm = MISSIONS[nextMission(p)];
+  const started = Object.keys(p.missions).length > 0;
+  const allDone = done === MISSIONS.length;
+  const playSub = allDone ? 'All missions complete · fly them again for stars' : `Mission ${nm.code} · ${nm.name}`;
+  const ships = SHIPS.filter((sh) => sh.unlocked(p)).length;
   const lvl = accountLevel(p);
   const today = currentChallenges(p.challenges, new Date()).daily!;
   const todayDone = today.done.filter(Boolean).length;
+  const nextChallenge = today.ids.map((id, i) => (today.done[i] ? null : challengeById(id)?.text)).find(Boolean) ?? null;
   return (
     <div className="screen home">
-      <header className="topbar">
-        <span className="logo logo-sm">CHAOS THEORY</span>
+      <header className="topbar home-topbar">
+        <button type="button" className="profile-chip" onClick={props.onProfile} aria-label={`Profile: account level ${lvl.level}`}>
+          <ShapePreview shape={p.settings.shape} size={18} />
+          <span className="profile-chip-level">Lv {lvl.level}</span>
+          <span className="profile-chip-bar" aria-hidden="true">
+            <span style={{ transform: `scaleX(${lvl.need ? lvl.into / lvl.need : 1})` }} />
+          </span>
+        </button>
         <div className="topbar-right">
-          <button type="button" className="profile-chip" onClick={props.onProfile} aria-label={`Profile: account level ${lvl.level}`}>
-            <ShapePreview shape={p.settings.shape} size={18} />
-            <span className="profile-chip-level">Lv {lvl.level}</span>
-            <span className="profile-chip-bar" aria-hidden="true">
-              <span style={{ transform: `scaleX(${lvl.need ? lvl.into / lvl.need : 1})` }} />
-            </span>
-          </button>
           <span className="player-chip" title="Stars earned">
             ★ {totalStars(p)}
             <span className="dim">/{maxStars()}</span>
           </span>
-          {hasVerifiedChaosPlus() ? <span className="plus-chip">Chaos+</span> : p.premiumDemo && PREVIEW_AVAILABLE && <span className="plus-chip">Cosmetics preview</span>}
+          {hasVerifiedChaosPlus() ? <span className="plus-chip">Chaos+</span> : p.premiumDemo && PREVIEW_AVAILABLE && <span className="plus-chip">Preview</span>}
           <SoundToggle muted={props.muted} audioState={props.audioState} onToggle={props.onToggleSound} onEnable={props.onEnableSound} />
         </div>
       </header>
 
       <main className="home-main">
         <section className="hero">
-          <p className="eyebrow">Ten arenas. Nine rules. One Core.</p>
+          <p className="eyebrow home-free">Free · no download · no sign-up</p>
           <h1 className="logo logo-xl" data-text="CHAOS THEORY">
             <span>CHAOS</span>
             <span>THEORY</span>
           </h1>
-          <p className="hero-tag">Survive the arena. The rules won&rsquo;t stay the same.</p>
-          <button type="button" className="play-now" onClick={props.onPlay} autoFocus style={nextDef ? ({ '--lvl': rgb(nextDef.accent) } as CSSProperties) : undefined}>
-            <span className="play-now-label">{nextDef ? 'Play campaign' : 'Play Endless'}</span>
+          <p className="hero-tag">Reality is unstable. Your mission isn&rsquo;t.</p>
+          <button type="button" className="play-now" onClick={props.onContinue} autoFocus style={{ '--lvl': rgb(nm.accent) } as CSSProperties}>
+            <span className="play-now-label">{started ? 'Continue campaign' : 'Start campaign'}</span>
             <span className="play-now-sub">{playSub}</span>
           </button>
-          <div className="campaign" aria-label={`${cleared} of ${STAGES.length} levels cleared`}>
+          <div className="campaign" aria-label={`${done} of ${MISSIONS.length} missions completed`}>
             <div className="campaign-bar">
-              <span style={{ transform: `scaleX(${cleared / STAGES.length})` }} />
+              <span style={{ transform: `scaleX(${done / MISSIONS.length})` }} />
             </div>
             <span className="campaign-text">
-              Campaign {cleared}/{STAGES.length}
+              Missions {done}/{MISSIONS.length}
             </span>
           </div>
         </section>
 
         <section className="mode-tiles" aria-label="Game modes">
-          <ModeTile title="Levels" meta={`${cleared}/${STAGES.length} cleared`} glyph="map" onClick={props.onLevels} />
-          <ModeTile title="Endless Modes" meta="4 modes · always unlocked" glyph="infinity" onClick={props.onModes} featured />
+          <ModeTile title="New mission" meta={`${MISSIONS.length} missions`} glyph="target" onClick={props.onNewMission} featured />
+          <ModeTile title="Endless mode" meta="4 survival modes" glyph="infinity" onClick={props.onModes} />
+          <ModeTile title="Play with friends" meta="Multiplayer · private rooms for 2–6" glyph="players" onClick={props.onMultiplayer} wide accent="friends" />
+          <ModeTile title="Arena levels" meta={`${cleared}/${STAGES.length} cleared`} glyph="map" onClick={props.onLevels} />
           <ModeTile title="Daily" meta={`${props.daily.mutator.name}${props.daily.best ? ` · ${props.daily.best.toLocaleString()}` : ''}`} glyph="sun" onClick={props.onDaily} />
           <ModeTile title="Trials" meta={chaosPlusUnlocked(p) ? `${TRIALS.length} bonus challenges` : 'Chaos+'} glyph="bolt" onClick={props.onTrials} badge={!chaosPlusUnlocked(p) ? 'Plus' : undefined} />
-          <ModeTile title="Multiplayer" meta="Private rooms · 2–6 players" glyph="players" onClick={props.onMultiplayer} wide />
+          <ModeTile title="Hangar" meta={`Ships ${ships}/${SHIPS.length}`} glyph="ship" onClick={props.onHangar} />
         </section>
 
-        <button type="button" className="today" onClick={props.onProfile}>
+        <button type="button" className="today" onClick={props.onProfile} aria-label={`Today's challenges: ${todayDone} of ${today.ids.length} done. Open profile`}>
           <span className="today-head">
             <span className="today-title">Today&rsquo;s challenges</span>
             <span className="today-count">
-              {todayDone}/{today.ids.length} done
+              {todayDone}/{today.ids.length} done ›
             </span>
           </span>
+          {nextChallenge && <span className="today-next">Next: {nextChallenge}</span>}
           <span className="today-list">
             {today.ids.map((id, i) => {
               const def = challengeById(id);
@@ -190,21 +166,47 @@ export function HomeScreen(props: {
         <AdSlot placement="home_banner" />
       </main>
 
-      <nav className="bottom-nav" aria-label="More">
-        <button type="button" onClick={props.onProfile}>
-          Profile
-        </button>
-        <button type="button" onClick={props.onCollection}>
-          Collection<span className="dim"> {p.achievements.length}/{ACHIEVEMENTS.length}</span>
-        </button>
-        <button type="button" onClick={props.onRecords}>Records</button>
-        <button type="button" onClick={props.onPremium} className="nav-plus">
-          Chaos+
-        </button>
-        <button type="button" onClick={props.onSettings}>Settings</button>
-        <button type="button" onClick={props.onTutorial}>How to play</button>
+      <nav className="tab-bar" aria-label="More">
+        <TabButton label="Profile" icon="profile" onClick={props.onProfile} />
+        <TabButton label="Collection" icon="collection" onClick={props.onCollection} />
+        <TabButton label="Records" icon="records" onClick={props.onRecords} />
+        <TabButton label="Chaos+" icon="plus" onClick={props.onPremium} plus />
+        <TabButton label="Settings" icon="settings" onClick={props.onSettings} />
+        <TabButton label="How to play" icon="help" onClick={props.onTutorial} />
       </nav>
     </div>
+  );
+}
+
+function TabButton({ label, icon, onClick, plus }: { label: string; icon: string; onClick: () => void; plus?: boolean }) {
+  const c = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
+  return (
+    <button type="button" className={`tab-btn${plus ? ' tab-plus' : ''}`} onClick={onClick}>
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+        {icon === 'profile' && (
+          <g {...c}>
+            <circle cx="12" cy="8" r="4" />
+            <path d="M4 21c1-4.5 4.5-6.5 8-6.5s7 2 8 6.5" />
+          </g>
+        )}
+        {icon === 'collection' && <path {...c} d="M4 5h7v7H4zM13 5h7v7h-7zM4 14h7v6H4zM13 14h7v6h-7z" />}
+        {icon === 'records' && <path {...c} d="M8 4h8v5a4 4 0 01-8 0zM5 5h3v3a3 3 0 01-3-3zM19 5h-3v3a3 3 0 003-3zM12 13v4M8 20h8" />}
+        {icon === 'plus' && <path {...c} d="M12 4v16M4 12h16" />}
+        {icon === 'settings' && (
+          <g {...c}>
+            <circle cx="12" cy="12" r="3" />
+            <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" />
+          </g>
+        )}
+        {icon === 'help' && (
+          <g {...c}>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M9.5 9.5a2.5 2.5 0 015 .3c0 1.7-2.5 2-2.5 3.7M12 17h.01" />
+          </g>
+        )}
+      </svg>
+      <span>{label}</span>
+    </button>
   );
 }
 
@@ -221,6 +223,14 @@ function Glyph({ name }: { name: string }) {
         </g>
       )}
       {name === 'bolt' && <path {...common} d="M18 3L8 18h7l-2 11 10-15h-7z" />}
+      {name === 'ship' && <path {...common} d="M28 16L12 10 6 4 8 13 8 19 6 28 12 22z" />}
+      {name === 'target' && (
+        <g {...common}>
+          <circle cx="16" cy="16" r="10" />
+          <circle cx="16" cy="16" r="4" />
+          <path d="M16 2v6M16 24v6M2 16h6M24 16h6" />
+        </g>
+      )}
       {name === 'players' && (
         <g {...common}>
           <circle cx="11" cy="11" r="4" />
@@ -240,9 +250,10 @@ function Glyph({ name }: { name: string }) {
   );
 }
 
-function ModeTile({ title, meta, glyph, onClick, badge, featured, wide }: { title: string; meta: string; glyph: string; onClick: () => void; badge?: string; featured?: boolean; wide?: boolean }) {
+function ModeTile(props: { title: string; meta: string; glyph: string; onClick: () => void; badge?: string; featured?: boolean; wide?: boolean; accent?: 'friends' }) {
+  const { title, meta, glyph, onClick, badge, featured, wide, accent } = props;
   return (
-    <button type="button" className={`mode-tile${featured ? ' mode-tile-featured' : ''}${wide ? ' mode-tile-wide' : ''}`} onClick={onClick}>
+    <button type="button" className={`mode-tile${featured ? ' mode-tile-featured' : ''}${wide ? ' mode-tile-wide' : ''}${accent ? ` mode-tile-${accent}` : ''}`} onClick={onClick}>
       <span className="mode-glyph">
         <Glyph name={glyph} />
       </span>
@@ -255,18 +266,17 @@ function ModeTile({ title, meta, glyph, onClick, badge, featured, wide }: { titl
 
 // ---------- Level map ----------
 
-export function LevelMap(props: { progress: Progress; themeLook: Pick<Look, 'arena' | 'accent' | 'shape'>; initial: number; onPlay: (i: number) => void; onBack: () => void }) {
+export function LevelMap(props: { progress: Progress; initial: number; onPlay: (i: number) => void; onBack: () => void }) {
   const p = props.progress;
-  const [selected, setSelected] = useState(props.initial);
-  const st = STAGES[selected];
-  const unlocked = isStageUnlocked(p, selected);
-  const rec = p.stages[selected];
-  const config = useMemo(() => stageConfig(selected), [selected]);
-  const look: Look = { ...props.themeLook, glow: st.accent, motif: st.motif, heat: st.heat, shake: false };
-  const [two, three] = starThresholds(selected);
-  const needed = selected; // levels before this one
-  const done = Array.from({ length: selected }, (_, i) => isCleared(p, i) || isSkipped(p, i)).filter(Boolean).length;
   const current = nextStage(p);
+  const cleared = levelsCleared(p);
+  const focusRef = useRef<HTMLButtonElement>(null);
+
+  // Bring the level to play next into view (and keyboard focus) when the list opens.
+  useEffect(() => {
+    focusRef.current?.scrollIntoView({ block: 'center' });
+    focusRef.current?.focus({ preventScroll: true });
+  }, []);
 
   return (
     <div className="screen levels">
@@ -278,93 +288,55 @@ export function LevelMap(props: { progress: Progress; themeLook: Pick<Look, 'are
           <span className="dim">/{maxStars()}</span>
         </span>
       </header>
-      <div className="levels-body">
-        <div className="levels-left">
-        <ol className="level-path">
-          {STAGES.map((s, i) => {
+      <div className="screen-scroll levels-scroll">
+        <div className="levels-progress" aria-label={`${cleared} of ${STAGES.length} levels cleared`}>
+          <div className="campaign-bar">
+            <span style={{ transform: `scaleX(${cleared / STAGES.length})` }} />
+          </div>
+          <span className="campaign-text">
+            {cleared}/{STAGES.length} cleared · tap a level to play
+          </span>
+        </div>
+        <ol className="level-list">
+          {STAGES.map((st, i) => {
             const open = isStageUnlocked(p, i);
-            const cls = ['level-node', open ? '' : 'locked', isCleared(p, i) ? 'cleared' : '', isSkipped(p, i) ? 'skipped' : '', i === current ? 'current' : '', i === selected ? 'selected' : '']
-              .filter(Boolean)
-              .join(' ');
+            const rec = p.stages[i];
+            const done = isCleared(p, i);
+            const skipped = isSkipped(p, i);
+            const isNext = i === current;
+            const cls = ['level-node', 'level-card', open ? '' : 'locked', done ? 'cleared' : '', skipped ? 'skipped' : '', isNext ? 'current' : ''].filter(Boolean).join(' ');
+            const status = done ? `Best ${rec!.best.toLocaleString()}` : skipped ? 'Skipped · clear it to earn stars' : open ? (isNext ? 'Up next' : 'Not cleared yet') : `Clear level ${i} to unlock`;
             return (
-              <li key={s.name} style={{ '--lvl': rgb(s.accent) } as CSSProperties}>
-                <button type="button" className={cls} onClick={() => setSelected(i)} aria-pressed={i === selected} aria-label={`Level ${i + 1}, ${s.name}${open ? '' : ', locked'}`}>
-                  <span className="node-num">{open ? String(i + 1).padStart(2, '0') : <LockIcon />}</span>
-                  <span className="node-name">{s.name}</span>
-                  <span className="node-foot">{isCleared(p, i) ? <Stars count={p.stages[i].stars} /> : isSkipped(p, i) ? <span className="dim">Skipped</span> : <Pips value={s.difficulty} />}</span>
+              <li key={st.name} style={{ '--lvl': rgb(st.accent) } as CSSProperties}>
+                <button
+                  type="button"
+                  ref={i === (props.initial >= 0 ? props.initial : current) ? focusRef : undefined}
+                  className={cls}
+                  onClick={() => open && props.onPlay(i)}
+                  aria-disabled={!open}
+                  aria-label={`${open ? 'Play level' : 'Locked: level'} ${i + 1}, ${st.name}. ${st.arena.name}. ${objectiveText(st.objective)}. ${status}`}
+                >
+                  <span className="lc-num" aria-hidden="true">
+                    {open ? String(i + 1).padStart(2, '0') : <LockIcon />}
+                  </span>
+                  <span className="lc-main">
+                    <span className="lc-name">{st.name}</span>
+                    <span className="lc-meta">
+                      {st.arena.name} · {objectiveText(st.objective)}
+                    </span>
+                    <span className="lc-desc">{open ? st.tagline : st.teaser}</span>
+                  </span>
+                  <span className="lc-side">
+                    {done ? <Stars count={rec!.stars} /> : <Pips value={st.difficulty} />}
+                    <span className={`lc-status${isNext ? ' lc-next' : ''}`}>{open ? (done ? status : skipped ? 'Skipped' : 'Play ▸') : 'Locked'}</span>
+                  </span>
                 </button>
               </li>
             );
           })}
         </ol>
+        <p className="levels-hint">Each level has four phases. Clearing one unlocks the next; scoring well earns up to three stars.</p>
         <AdSlot placement="level_select_banner" />
-        </div>
-
-        <aside className="level-detail" style={{ '--lvl': rgb(st.accent) } as CSSProperties} aria-live="polite">
-          <p className="eyebrow eyebrow-lvl">
-            Level {String(selected + 1).padStart(2, '0')} · {DIFFICULTY[st.difficulty]}
-          </p>
-          <h3 className="detail-name">{st.name}</h3>
-          <p className="detail-tag">{st.tagline}</p>
-          <div className={`preview${unlocked ? '' : ' preview-locked'}`}>
-            <LevelPreview key={selected} config={config} look={look} clip={unlocked ? 9 : 4} label={`Preview of ${st.name}`} />
-            {!unlocked && (
-              <div className="preview-veil">
-                <LockIcon />
-                <span className="veil-title">Locked</span>
-                <span className="veil-teaser">{st.teaser}</span>
-              </div>
-            )}
-          </div>
-          <div className="detail-facts">
-            <span className="fact">
-              <span className="fact-label">Objective</span>
-              <span className="fact-value">{objectiveText(st.objective)}</span>
-            </span>
-            <span className="fact">
-              <span className="fact-label">Difficulty</span>
-              <Pips value={st.difficulty} />
-            </span>
-          </div>
-          <ol className="phase-list" aria-label="Phases">
-            {st.phases.map((ph, k) => (
-              <li key={ph.name}>
-                <span className="phase-num">{k + 1}</span>
-                {unlocked || k === 0 ? ph.name : '???'}
-              </li>
-            ))}
-          </ol>
-          <div className="chips">
-            {st.mechanics.map((m) => (
-              <span key={m} className="chip chip-lvl">
-                {m}
-              </span>
-            ))}
-          </div>
-          {unlocked ? (
-            <>
-              <div className="detail-record">
-                <Stars count={rec?.stars ?? 0} />
-                <span className="dim">
-                  {rec ? `Best ${rec.best.toLocaleString()}` : isSkipped(p, selected) ? 'Skipped. Clear it to earn stars' : 'Not cleared yet'} · ★★ {two} · ★★★ {three}
-                </span>
-              </div>
-              <button type="button" className="btn btn-primary btn-play" onClick={() => props.onPlay(selected)}>
-                Play level {selected + 1}
-              </button>
-            </>
-          ) : (
-            <div className="unlock">
-              <span className="unlock-title">Unlock by playing</span>
-              <div className="unlock-bar">
-                <span style={{ transform: `scaleX(${done / needed})` }} />
-              </div>
-              <span className="dim">
-                Clear Level {selected} to unlock · {needed - done} {needed - done === 1 ? 'level' : 'levels'} to go
-              </span>
-            </div>
-          )}
-        </aside>
       </div>
     </div>
   );
@@ -383,11 +355,10 @@ export function modeBestRows(id: EndlessId, b: Progress['modeBests'][EndlessId])
   return [['Best time', time], ['Best score', b.score.toLocaleString()], ['Most events', String(b.events)]];
 }
 
-export function ModesScreen(props: { progress: Progress; themeLook: Pick<Look, 'arena' | 'accent' | 'shape'>; initial: EndlessId; onStart: (id: EndlessId) => void; onBack: () => void }) {
+export function ModesScreen(props: { progress: Progress; initial: EndlessId; onStart: (id: EndlessId) => void; onBack: () => void }) {
   const [selected, setSelected] = useState<EndlessId>(props.initial);
   const mode = ENDLESS_MODES.find((m) => m.id === selected)!;
   const best = props.progress.modeBests[selected];
-  const look: Look = { ...props.themeLook, glow: mode.accent, motif: mode.motif, heat: 0.3, shake: false };
   return (
     <div className="screen modes">
       <header className="screen-top">
@@ -423,9 +394,6 @@ export function ModesScreen(props: { progress: Progress; themeLook: Pick<Look, '
           <p className="eyebrow eyebrow-lvl">Endless mode</p>
           <h3 className="detail-name">{mode.name}</h3>
           <p className="detail-tag">{mode.objective}</p>
-          <div className="preview">
-            <LevelPreview key={selected} config={mode.config} look={look} clip={12} label={`Preview of ${mode.name}`} />
-          </div>
           <ul className="rule-list">
             {mode.rules.map((rule) => (
               <li key={rule}>{rule}</li>
@@ -679,7 +647,7 @@ export function PremiumScreen(props: {
               ))}
             </span>
           </Perk>
-          <Perk title="No ads, ever" text="The game has no ads today. If ads are ever added, Chaos+ supporters will not see them.">
+          <Perk title="No ad spaces" text="Chaos+ hides the ad placeholder panels in the menus. No ads or ad networks run in the game today; if real ads are ever added, supporters will not see them.">
             <span className="perk-art perk-icon">⊘</span>
           </Perk>
           <Perk title="Everything stays free" text="All 10 levels, Endless Modes, multiplayer, challenges, XP and the earned trails and victory effects stay free for everyone.">

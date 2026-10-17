@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { ADS_CONFIG, AD_PLACEMENTS, decideSlot, type AdPlacementId, type AdsConfig } from '../monetization/ads';
+import { ADS_CONFIG, ADVERTISE_CONTACT, AD_PLACEMENTS, decideSlot, type AdPlacementId, type AdsConfig } from '../monetization/ads';
 import type { PremiumStatus } from '../monetization/entitlements';
 
 /** Provided once by the app: config plus the verified entitlement. Components never check premium themselves. */
@@ -7,29 +7,38 @@ export const AdsContext = createContext<{ config: AdsConfig; premium: PremiumSta
 
 /**
  * A reusable advertising slot. Renders:
- * - nothing, when ads are disabled or the player has a verified ad-free entitlement;
- * - a clearly marked development placeholder (dev builds only, no ad is loaded);
+ * - nothing, when the placement is switched off, placeholders are off, or the player has Chaos+;
+ * - a labelled "Your brand here" placeholder: part of the game itself, no ad is loaded, nothing is tracked;
  * - a live provider banner, labelled "Advertisement" only once an ad has actually rendered.
  */
 export function AdSlot({ placement, className = '' }: { placement: AdPlacementId; className?: string }) {
   const { config, premium } = useContext(AdsContext);
-  const mode = decideSlot(config, premium);
+  const mode = decideSlot(config, premium, placement);
   const p = AD_PLACEMENTS[placement];
   const style = { '--ad-h-mobile': `${p.height.mobile}px`, '--ad-h-desktop': `${p.height.desktop}px`, maxWidth: p.maxWidth } as CSSProperties;
 
   if (mode === 'hidden') return null;
   if (mode === 'placeholder') {
     return (
-      <aside className={`ad-slot ad-placeholder ${className}`} style={style} data-placement={placement} aria-label="Advertisement placeholder (development only, no ad is loaded)">
+      <aside className={`ad-slot ad-placeholder ${className}`} style={style} data-placement={placement} aria-label="Advertisement space available">
         <span className="ad-label">Advertisement</span>
-        <span className="ad-placeholder-text">
-          <span className="ad-size ad-size-mobile">
-            {p.width.mobile} × {p.height.mobile}
+        <span className="ad-size ad-size-mobile" aria-hidden="true">
+          {p.width.mobile}×{p.height.mobile}
+        </span>
+        <span className="ad-size ad-size-desktop" aria-hidden="true">
+          {p.width.desktop}×{p.height.desktop}
+        </span>
+        <span className="ad-ph">
+          <span className="ad-ph-brand">Your brand here</span>
+          <span className="ad-ph-sub">
+            Advertise with Chaos Theory
+            {ADVERTISE_CONTACT && (
+              <>
+                {' · '}
+                <a href={`mailto:${ADVERTISE_CONTACT}?subject=Advertising%20on%20Chaos%20Theory`}>Advertise with us</a>
+              </>
+            )}
           </span>
-          <span className="ad-size ad-size-desktop">
-            {p.width.desktop} × {p.height.desktop}
-          </span>{' '}
-          · <code>{placement}</code> · placeholder, development only
         </span>
       </aside>
     );

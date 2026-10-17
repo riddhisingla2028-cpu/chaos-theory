@@ -19,7 +19,13 @@ export type SoundName =
   | 'orb'
   | 'bossHit'
   | 'beam'
-  | 'levelup';
+  | 'levelup'
+  | 'shoot'
+  | 'enemyShot'
+  | 'hit'
+  | 'explode'
+  | 'chronoOn'
+  | 'chronoOff';
 
 type Wave = OscillatorType;
 
@@ -61,6 +67,7 @@ export class Sfx {
   private musicVolume = 1;
   private lastNear = 0;
   private lastHover = 0;
+  private lastShot = 0;
   private ambient: { gain: GainNode; nodes: AudioScheduledSourceNode[] } | null = null;
   private wantAmbient = false;
   private state: AudioState = 'locked';
@@ -297,6 +304,36 @@ export class Sfx {
         break;
       case 'beam':
         this.tone(140, 1.2, 'sawtooth', 0.25, 0, 70);
+        break;
+      case 'shoot': {
+        // Rapid blaster: very short and quiet so it never dominates.
+        const now = this.ctx!.currentTime;
+        if (now - this.lastShot < 0.08) return;
+        this.lastShot = now;
+        this.tone(1400, 0.05, 'square', 0.07, 0, 700);
+        break;
+      }
+      case 'enemyShot':
+        this.tone(380, 0.16, 'sawtooth', 0.14, 0, 220);
+        break;
+      case 'hit':
+        this.noise(0.25, 0.55, 200, 1200);
+        this.tone(140, 0.3, 'square', 0.35, 0, 60);
+        break;
+      case 'explode':
+        this.noise(0.5, 0.5, 120, 2400);
+        this.tone(90, 0.5, 'sawtooth', 0.3, 0, 35);
+        break;
+      case 'chronoOn':
+        // A falling, reverberant sweep: time slows.
+        this.tone(880, 0.9, 'sine', 0.3, 0, 220);
+        this.tone(660, 1.1, 'triangle', 0.18, 0.05, 165);
+        this.noise(0.6, 0.12, 300, 1200);
+        break;
+      case 'chronoOff':
+        // A rising snap back to full speed.
+        this.tone(220, 0.35, 'sawtooth', 0.25, 0, 990);
+        this.noise(0.25, 0.3, 800, 6000);
         break;
       case 'levelup':
         [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone(f, 0.35, 'triangle', 0.4, i * 0.07));

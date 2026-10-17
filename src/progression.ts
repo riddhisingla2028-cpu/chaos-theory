@@ -202,7 +202,7 @@ export function applyChallenges(state: ChallengeState, r: RunFacts, now: Date): 
 // ---------- Match history ----------
 
 export interface MatchEntry {
-  mode: GameMode;
+  mode: GameMode | 'mission';
   label: string;
   won: boolean;
   score: number;

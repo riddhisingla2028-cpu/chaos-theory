@@ -1,10 +1,11 @@
-// Advertising architecture. Provider-agnostic and DISABLED: no ad network, no third-party
-// scripts, no tracking. To go live later:
+// Advertising architecture. Provider-agnostic, with NO ad network: no third-party scripts and no
+// tracking. Until a provider exists, each enabled placement shows a labelled "Your brand here"
+// placeholder that is part of the game itself (hide them all with VITE_AD_PLACEHOLDERS=false, or
+// switch single placements off in AD_PLACEMENTS below). There is never an ad on the game screen.
+// To go live later:
 //   1. Implement AdProvider for an approved network (load its script only inside that provider).
 //   2. Set AD_PROVIDER below to it.
 //   3. Build with VITE_ADS_ENABLED=true.
-// Until both are done, production renders no ad slots at all; development shows clearly
-// labelled placeholders (hide them with VITE_AD_PLACEHOLDERS=false).
 
 import { adsAllowedFor, type PremiumStatus } from './entitlements';
 
@@ -18,15 +19,17 @@ export interface AdPlacement {
   /** Standard banner width for each layout (IAB sizes: 320x50 mobile, 468x60 or 728x90 desktop). */
   width: { mobile: number; desktop: number };
   maxWidth: number;
+  /** Switch a single placement on or off without touching the rest. */
+  enabled: boolean;
 }
 
-/** Ads are never placed over the arena: none of these appear during active gameplay. */
+/** No placement exists on the game screen: ads never appear during active gameplay, over the arena or over controls. */
 export const AD_PLACEMENTS: Record<AdPlacementId, AdPlacement> = {
-  home_banner: { id: 'home_banner', description: 'Lobby, below the game modes', height: { mobile: 50, desktop: 90 }, width: { mobile: 320, desktop: 728 }, maxWidth: 728 },
-  level_select_banner: { id: 'level_select_banner', description: 'Campaign level select, below the level grid', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468 },
-  results_banner: { id: 'results_banner', description: 'Level results, below the buttons', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468 },
-  endless_results_banner: { id: 'endless_results_banner', description: 'Endless results, below the buttons', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468 },
-  profile_banner: { id: 'profile_banner', description: 'Profile page, below the match history', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468 },
+  home_banner: { id: 'home_banner', description: 'Launcher, below the game modes and challenges', height: { mobile: 50, desktop: 90 }, width: { mobile: 320, desktop: 728 }, maxWidth: 728, enabled: true },
+  level_select_banner: { id: 'level_select_banner', description: 'Level select, below the level list', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468, enabled: true },
+  results_banner: { id: 'results_banner', description: 'Level results, below the buttons', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468, enabled: true },
+  endless_results_banner: { id: 'endless_results_banner', description: 'Endless results, below the buttons', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468, enabled: true },
+  profile_banner: { id: 'profile_banner', description: 'Profile page, below the match history', height: { mobile: 50, desktop: 60 }, width: { mobile: 320, desktop: 468 }, maxWidth: 468, enabled: true },
 };
 
 export type InterstitialResult = 'shown' | 'skipped' | 'unavailable';
@@ -46,6 +49,17 @@ export interface AdProvider {
   /** Optional rewarded ad. Disabled until a real provider exists. */
   showRewarded?(placement: string): Promise<RewardResult>;
 }
+
+/**
+ * Where would-be advertisers can get in touch. Shown as an "Advertise with us" link on the
+ * placeholders ONLY when set (VITE_ADVERTISE_EMAIL), so the link always leads somewhere real.
+ */
+export function advertiseContactFrom(env: Record<string, unknown>): string | null {
+  const v = typeof env.VITE_ADVERTISE_EMAIL === 'string' ? env.VITE_ADVERTISE_EMAIL.trim() : '';
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) ? v : null;
+}
+
+export const ADVERTISE_CONTACT = advertiseContactFrom(import.meta.env as unknown as Record<string, unknown>);
 
 /** Deliberately null: no advertising network has been chosen or approved. */
 export const AD_PROVIDER: AdProvider | null = null;
@@ -70,7 +84,8 @@ export function adsConfigFrom(env: Env, provider: AdProvider | null = AD_PROVIDE
   return {
     // Live ads need BOTH an explicit opt-in and a configured provider.
     enabled: env.VITE_ADS_ENABLED === 'true' && provider !== null,
-    placeholders: env.DEV === true && env.VITE_AD_PLACEHOLDERS !== 'false',
+    // Labelled "Your brand here" placeholders, in every build, unless switched off.
+    placeholders: env.VITE_AD_PLACEHOLDERS !== 'false',
     provider,
     interstitial: { minRunsBetween: 3, cooldownMs: 3 * 60 * 1000, maxPerSession: 4 },
     rewardedEnabled: false,
@@ -82,7 +97,8 @@ export const ADS_CONFIG: AdsConfig = adsConfigFrom(import.meta.env as Env);
 export type SlotMode = 'hidden' | 'placeholder' | 'live';
 
 /** What a slot should render, given the config and the player's verified entitlement. */
-export function decideSlot(config: AdsConfig, premium: PremiumStatus): SlotMode {
+export function decideSlot(config: AdsConfig, premium: PremiumStatus, placement?: AdPlacementId): SlotMode {
+  if (placement && !AD_PLACEMENTS[placement].enabled) return 'hidden';
   if (!adsAllowedFor(premium)) return 'hidden';
   if (config.enabled && config.provider) return 'live';
   if (config.placeholders) return 'placeholder';

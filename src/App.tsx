@@ -40,14 +40,20 @@ import {
   type Settings,
   hasVerifiedChaosPlus,
   setVerifiedChaosPlus,
+  applyMission,
+  equippedShip,
+  nextMission,
+  type MissionResult,
 } from './progress';
 import { TRAILS, VICTORIES, equipped } from './progression';
 import { IconButton, PauseIcon, PlayIcon, SoundToggle } from './ui/common';
 import { Collection, SettingsScreen, Tutorial } from './ui/Menus';
 import { GameOverScreen, PausedScreen, VictoryScreen, type Result } from './ui/Results';
-import { HomeScreen, LevelMap, ModesScreen, PremiumScreen, RecordsScreen, SplashScreen } from './ui/Lobby';
+import { HomeScreen, LevelMap, ModesScreen, PremiumScreen, RecordsScreen } from './ui/Lobby';
 import { LobbyBackground } from './ui/LobbyBackground';
 import { ProfileScreen } from './ui/Profile';
+import { MissionsScreen } from './ui/Missions';
+import { MISSIONS } from './mission/sim';
 import { LegalScreen } from './ui/Legal';
 import { initAnalytics, track } from './analytics';
 import { MultiplayerScreen, inviteCodeFromUrl } from './ui/Multiplayer';
@@ -58,7 +64,6 @@ import { ADS_CONFIG, AdFrequency, maybeShowInterstitial } from './monetization/a
 import { resolvePremiumStatus, type PremiumStatus } from './monetization/entitlements';
 
 type Screen =
-  | 'splash'
   | 'home'
   | 'levels'
   | 'modes'
@@ -66,6 +71,7 @@ type Screen =
   | 'records'
   | 'profile'
   | 'multiplayer'
+  | 'missions'
   | 'legal'
   | 'settings'
   | 'premium'
@@ -75,7 +81,7 @@ type Screen =
   | 'over'
   | 'won';
 
-const LOBBY: ReadonlySet<Screen> = new Set(['splash', 'home', 'levels', 'modes', 'collection', 'records', 'profile', 'multiplayer', 'legal', 'settings', 'premium', 'tutorial']);
+const LOBBY: ReadonlySet<Screen> = new Set(['home', 'levels', 'modes', 'collection', 'records', 'profile', 'multiplayer', 'missions', 'legal', 'settings', 'premium', 'tutorial']);
 
 type RGB = [number, number, number];
 const CYAN: RGB = [79, 227, 240];
@@ -110,6 +116,8 @@ interface Hud {
 }
 
 const JOY_RADIUS: Record<Settings['joySize'], number> = { S: 44, M: 56, L: 72 };
+/** Smallest useful touch-control pad under the arena on portrait phones (px). */
+const PAD_MIN_HEIGHT = 96;
 const JOY_DEADZONE = 6; // px
 const MAX_STEP = 1 / 120; // simulation substep, seconds
 const HUD_INTERVAL = 0.066; // seconds between HUD refreshes
@@ -217,8 +225,10 @@ export default function App() {
   const progressRef = useRef(progress);
   const settings = progress.settings;
 
-  const [screen, setScreenState] = useState<Screen>('splash');
-  const screenRef = useRef<Screen>('splash');
+  // The launcher is the first screen (an invite link ?room=CODE opens Multiplayer instead), so every
+  // mode is visible straight away. Sound unlocks on the first tap or key press anywhere.
+  const [screen, setScreenState] = useState<Screen>(() => (inviteCodeFromUrl() ? 'multiplayer' : 'home'));
+  const screenRef = useRef<Screen>(screen);
   const runRef = useRef<Run>(makeEndlessRun());
   const pendingRunRef = useRef<Run | null>(null);
   const gameRef = useRef<GameState>(createGame(1, ENDLESS_CONFIG));
@@ -234,7 +244,6 @@ export default function App() {
   const [isTouch] = useState(() => matches('(pointer: coarse)'));
   const isTouchRef = useRef(isTouch);
   const [inviteCode] = useState(inviteCodeFromUrl);
-  const inviteCodeRef = useRef(inviteCode);
   const [systemReducedMotion] = useState(() => matches('(prefers-reduced-motion: reduce)'));
   const motionPref = progress.settings.reducedMotion;
   const reducedMotion = motionPref === 'reduced' || (motionPref === 'system' && systemReducedMotion);
@@ -245,6 +254,7 @@ export default function App() {
   const lastAttemptRef = useRef(new Map<string, number>());
 
   const stageRef = useRef<HTMLDivElement>(null);
+  const padRef = useRef<HTMLDivElement>(null);
   const arenaRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const joyBaseRef = useRef<HTMLDivElement>(null);
@@ -390,15 +400,38 @@ export default function App() {
     screenRef.current = next;
     setScreenState(next);
     if (next === 'premium' && prev !== 'premium') track('chaosplus_view');
-    if (LOBBY.has(prev) && LOBBY.has(next) && prev !== next && prev !== 'splash') sfxRef.current.play('whoosh');
+    if (LOBBY.has(prev) && LOBBY.has(next) && prev !== next) sfxRef.current.play('whoosh');
   }, []);
 
   // Menu music: on in the lobby, off in game (multiplayer matches included).
   // The engine starts the loop once audio is actually running and never runs two at once.
   const [mpPlaying, setMpPlaying] = useState(false);
+  const [missionPlaying, setMissionPlaying] = useState(false);
   useEffect(() => {
-    sfxRef.current.setAmbient(LOBBY.has(screen) && screen !== 'splash' && !(screen === 'multiplayer' && mpPlaying) && settings.music && !settings.muted);
-  }, [screen, mpPlaying, settings.music, settings.muted]);
+    const inMatch = (screen === 'multiplayer' && mpPlaying) || (screen === 'missions' && missionPlaying);
+    sfxRef.current.setAmbient(LOBBY.has(screen) && !inMatch && settings.music && !settings.muted);
+  }, [screen, mpPlaying, missionPlaying, settings.music, settings.muted]);
+
+  // Spacecraft missions: their own screen and loop (src/ui/Missions.tsx); results saved here.
+  const [missionStart, setMissionStart] = useState<number | null>(null);
+  const openMissions = useCallback(
+    (start: number | null) => {
+      if (start !== null) track('play_click');
+      void sfxRef.current.unlock();
+      setMissionStart(start);
+      setScreen('missions');
+    },
+    [setScreen],
+  );
+  const recordMission = useCallback(
+    (r: MissionResult) => {
+      const o = applyMission(progressRef.current, r);
+      updateProgress(o.progress);
+      track(r.won ? 'game_complete' : 'game_start', { mode: 'mission', level: MISSIONS.findIndex((m) => m.id === r.id) + 1 });
+      return o;
+    },
+    [updateProgress],
+  );
 
   // Subtle hover/click feedback on every button (mouse only for hover).
   useEffect(() => {
@@ -462,11 +495,6 @@ export default function App() {
     [setScreen, startRun],
   );
 
-  const playNext = useCallback(() => {
-    track('play_click');
-    const n = nextStage(progressRef.current);
-    beginRun(n >= 0 ? makeStageRun(n) : makeEndlessRun());
-  }, [beginRun]);
 
   const retry = useCallback(() => startRun(freshRun(runRef.current)), [startRun]);
 
@@ -704,11 +732,6 @@ export default function App() {
 
     const onKeyDown = (e: KeyboardEvent) => {
       const s = screenRef.current;
-      if (s === 'splash') {
-        e.preventDefault();
-        enterFromSplash();
-        return;
-      }
       // Typing in a form field (account sign-in, room code, name) must never trigger game shortcuts.
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) && (t as HTMLInputElement).type !== 'range') {
@@ -725,7 +748,7 @@ export default function App() {
         case 'NumpadEnter':
           if (s === 'playing') e.preventDefault();
           if (onButton) return;
-          if (s === 'home') playNext();
+          if (s === 'home') openMissions(nextMission(progressRef.current));
           else if (s === 'over' && canAct()) retry();
           else if (s === 'won' && canAct()) advance();
           else if (s === 'paused') resume();
@@ -771,14 +794,6 @@ export default function App() {
     };
   });
 
-  function enterFromSplash(target?: Screen) {
-    if (screenRef.current !== 'splash') return;
-    const sfx = sfxRef.current;
-    if (!progressRef.current.settings.muted) void sfx.unlock().then(() => sfx.play('boot'));
-    // An invite link (?room=CODE) goes straight to Multiplayer with the code filled in.
-    setScreen(target ?? (inviteCodeRef.current ? 'multiplayer' : 'home'));
-  }
-
   // Ask before leaving or refreshing the page in the middle of a real run.
   useEffect(() => {
     const guard = (e: BeforeUnloadEvent) => {
@@ -815,7 +830,11 @@ export default function App() {
     if (!el) return;
     const measure = () => {
       const rect = el.getBoundingClientRect();
-      const next = Math.max(200, Math.floor(Math.min(rect.width, rect.height)));
+      // On portrait touch screens a control pad sits under the arena (where the thumb goes), so
+      // leave it room. The arena itself is always a true square: nothing is stretched.
+      const pad = padRef.current;
+      const padRoom = pad && getComputedStyle(pad).display !== 'none' ? PAD_MIN_HEIGHT + 10 : 0;
+      const next = Math.max(200, Math.floor(Math.min(rect.width, rect.height - padRoom)));
       sizeRef.current = next;
       setSize(next);
     };
@@ -905,6 +924,12 @@ export default function App() {
     const stage = stageRef.current!.getBoundingClientRect();
     const arena = arenaRef.current!.getBoundingClientRect();
     const r = JOY_RADIUS[progressRef.current.settings.joySize];
+    // The touch pad under the arena is the natural home for the fixed joystick.
+    const pad = padRef.current;
+    if (pad && getComputedStyle(pad).display !== 'none') {
+      const p = pad.getBoundingClientRect();
+      if (p.height >= r * 2 + 8) return { x: p.left + p.width / 2, y: p.top + p.height / 2 };
+    }
     if (stage.bottom - arena.bottom >= r * 2 + 24) return { x: stage.left + stage.width / 2, y: (arena.bottom + stage.bottom) / 2 };
     if (arena.left - stage.left >= r * 2 + 24) return { x: (stage.left + arena.left) / 2, y: stage.bottom - r - 24 };
     return { x: stage.left + r + 16, y: stage.bottom - r - 16 };
@@ -1068,7 +1093,7 @@ export default function App() {
       </header>
 
       <div
-        className="stage"
+        className={`stage${isTouch ? ' stage-touch' : ''}`}
         ref={stageRef}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -1134,6 +1159,16 @@ export default function App() {
             </div>
           )}
         </div>
+        {isTouch && (
+          <div className={`touch-pad${settings.joyMode === 'fixed' ? ' touch-pad-fixed' : ''}`} ref={padRef} aria-hidden="true">
+            {showRunHud && (
+              <>
+                <span className="touch-pad-ring" />
+                <span className="touch-pad-text">{settings.joyMode === 'fixed' ? 'Joystick' : 'Drag here or anywhere to move'}</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="joystick" ref={joyBaseRef} hidden aria-hidden="true">
@@ -1143,7 +1178,6 @@ export default function App() {
       {lobby && (
         <div className="lobby">
           <LobbyBackground accent={lobbyAccent} still={reducedMotion} />
-          {screen === 'splash' && <SplashScreen isTouch={isTouch} onEnter={() => enterFromSplash()} onFriends={() => enterFromSplash('multiplayer')} />}
           {(screen === 'home' || screen === 'tutorial') && (
             <HomeScreen
               progress={progress}
@@ -1153,7 +1187,9 @@ export default function App() {
               isTouch={isTouch}
               onToggleSound={toggleMute}
               onEnableSound={enableSound}
-              onPlay={playNext}
+              onContinue={() => openMissions(nextMission(progress))}
+              onNewMission={() => openMissions(null)}
+              onHangar={() => setScreen('collection')}
               onLevels={() => openLevels()}
               onModes={() => setScreen('modes')}
               onDaily={() => beginRun(makeDailyRun())}
@@ -1173,7 +1209,6 @@ export default function App() {
           {screen === 'levels' && (
             <LevelMap
               progress={progress}
-              themeLook={{ arena: theme.arena, accent: theme.accent, shape: settings.shape }}
               initial={levelsFocus}
               onPlay={(i) => beginRun(makeStageRun(i))}
               onBack={() => setScreen('home')}
@@ -1182,7 +1217,6 @@ export default function App() {
           {screen === 'modes' && (
             <ModesScreen
               progress={progress}
-              themeLook={{ arena: theme.arena, accent: theme.accent, shape: settings.shape }}
               initial={modesFocus}
               onStart={(id) => {
                 setModesFocus(id);
@@ -1197,12 +1231,29 @@ export default function App() {
               onShape={(shape) => changeSettings({ shape })}
               onTheme={(id) => changeSettings({ theme: id })}
               onTrail={(trail) => changeSettings({ trail })}
+              onShip={(ship) => changeSettings({ ship })}
               onVictory={(victory) => changeSettings({ victory })}
               onPremium={() => setScreen('premium')}
               onBack={() => setScreen('home')}
             />
           )}
           {screen === 'records' && <RecordsScreen progress={progress} onBack={() => setScreen('home')} />}
+          {screen === 'missions' && (
+            <MissionsScreen
+              progress={progress}
+              sfx={sfxRef.current}
+              look={{
+                ship: equippedShip(progress),
+                trail: equipped(TRAILS, settings.trail, progress.xp, hasVerifiedChaosPlus()),
+                reducedMotion: reducedMotion || !settings.shake,
+              }}
+              isTouch={isTouch}
+              start={missionStart}
+              onRecord={recordMission}
+              onActive={setMissionPlaying}
+              onBack={() => setScreen('home')}
+            />
+          )}
           {screen === 'multiplayer' && (
             <MultiplayerScreen
               shape={settings.shape}

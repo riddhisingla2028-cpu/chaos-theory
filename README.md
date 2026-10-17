@@ -95,11 +95,13 @@ Chaos+ is an optional one-time purchase sold through Gumroad. It adds a supporte
 
 **Until it is configured** (see `.env.example` and `LAUNCH.md`), the page shows "Coming soon", no price, and a clearly labelled free preview of the collection. Players stuck on a level for three attempts can skip it for free (no stars).
 
-### Advertising (disabled)
+### Advertising (placeholders only)
 
-Reserved, provider-agnostic ad slots exist in five places: the **lobby** (below the modes), **campaign level select**, **level results**, **Endless results** and the **profile page**. Ads never appear during gameplay, over the arena or over controls. **Ads are disabled:** there is no ad network, no third-party script and no tracking. Production builds render no slot at all, so there are no empty gaps; development builds show a subtle placeholder labelled "Advertisement" with the intended size (320×50 on phones; 468×60 or 728×90 on desktop).
+Five menu screens show a labelled placeholder panel ("Your brand here · Advertise with Chaos Theory"): the **launcher** (below the modes), **level select**, **level results**, **Endless results** and the **profile page**. There is **no ad on the game screen**: nothing during gameplay, over the arena or over controls. The placeholders are part of the game itself: there is no ad network, no third-party script, no tracking, and no advertisers or sponsors. Chaos+ supporters do not see them.
 
-To enable ads later, after choosing and approving a provider: implement the `AdProvider` interface in `src/monetization/ads.ts`, set `AD_PROVIDER`, and build with `VITE_ADS_ENABLED=true`. Between-run ads are frequency-capped, and rewarded ads stay off until a real provider exists.
+- Switch a single placement off in `AD_PLACEMENTS` (`src/monetization/ads.ts`), or all of them with `VITE_AD_PLACEHOLDERS=false`.
+- An "Advertise with us" link appears on the placeholders only when `VITE_ADVERTISE_EMAIL` is set.
+- To run real ads later, after choosing and approving a provider: implement the `AdProvider` interface in `src/monetization/ads.ts`, set `AD_PROVIDER`, and build with `VITE_ADS_ENABLED=true`. Between-run ads are frequency-capped, and rewarded ads stay off until a real provider exists.
 
 ## Controls
 

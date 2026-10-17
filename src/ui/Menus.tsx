@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { ACHIEVEMENTS, SHAPES, THEMES, accountLevel, hasVerifiedChaosPlus, type MotionPref, type Progress, type Settings, type ShapeId, type ThemeId } from '../progress';
+import { ACHIEVEMENTS, SHAPES, SHIPS, THEMES, accountLevel, equippedShip, hasVerifiedChaosPlus, type MotionPref, type Progress, type Settings, type ShapeId, type ThemeId } from '../progress';
 import { TRAILS, VICTORIES, type LevelCosmetic, type TrailId, type VictoryId } from '../progression';
+import { HULLS, type ShipId } from '../mission/render';
 import { BackButton, LockIcon, Overlay, ShapePreview } from './common';
 
 // ---------- Collection ----------
@@ -10,11 +11,13 @@ export function Collection(props: {
   onShape: (id: ShapeId) => void;
   onTheme: (id: ThemeId) => void;
   onTrail: (id: TrailId) => void;
+  onShip: (id: ShipId) => void;
+  initialTab?: 'ships';
   onVictory: (id: VictoryId) => void;
   onPremium: () => void;
   onBack: () => void;
 }) {
-  const [tab, setTab] = useState<'skins' | 'themes' | 'trails' | 'victory' | 'achievements'>('skins');
+  const [tab, setTab] = useState<'ships' | 'skins' | 'themes' | 'trails' | 'victory' | 'achievements'>(props.initialTab ?? 'ships');
   const p = props.progress;
   const level = accountLevel(p).level;
   const lockedText = (req: string, premium?: boolean) => (premium ? 'Chaos+ collection' : req);
@@ -51,12 +54,35 @@ export function Collection(props: {
       </header>
       <div className="screen-scroll">
         <div className="tabs" role="tablist">
-          {(['skins', 'themes', 'trails', 'victory', 'achievements'] as const).map((t) => (
+          {(['ships', 'skins', 'themes', 'trails', 'victory', 'achievements'] as const).map((t) => (
             <button key={t} type="button" role="tab" aria-selected={tab === t} className={`tab${tab === t ? ' tab-on' : ''}`} onClick={() => setTab(t)}>
               {t === 'victory' ? 'wins' : t}
             </button>
           ))}
         </div>
+
+        {tab === 'ships' && (
+          <div className="pick-grid">
+            {SHIPS.map((sh) => {
+              const open = sh.unlocked(p);
+              const on = equippedShip(p) === sh.id;
+              return (
+                <button
+                  key={sh.id}
+                  type="button"
+                  className={`pick${on ? ' pick-on' : ''}${open ? '' : ' locked'}${sh.premium ? ' pick-plus' : ''}`}
+                  onClick={() => (open ? props.onShip(sh.id) : sh.premium ? props.onPremium() : undefined)}
+                  aria-disabled={!open}
+                >
+                  {sh.premium && <span className="pick-badge">Plus</span>}
+                  <span className="pick-art">{open ? <ShipArt id={sh.id} /> : <LockIcon />}</span>
+                  <span className="pick-name">{sh.name}</span>
+                  <span className="pick-req">{on ? 'Equipped' : open ? 'Tap to equip' : sh.premium ? 'Chaos+ supporters only' : sh.req}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {tab === 'skins' && (
           <div className="pick-grid">
@@ -129,6 +155,17 @@ export function Collection(props: {
         )}
       </div>
     </div>
+  );
+}
+
+/** A ship hull drawn from the same outline the game uses. */
+function ShipArt({ id }: { id: ShipId }) {
+  const pts = HULLS[id].map(([x, y]) => `${x},${y}`).join(' ');
+  return (
+    <svg viewBox="-32 -30 64 60" width="56" height="52" aria-hidden="true">
+      <polygon points={pts} transform="rotate(-90)" fill="#1f2a4d" stroke={id === 'phantom' ? '#FFD54A' : '#4FE3F0'} strokeWidth="2" />
+      <ellipse cx="0" cy="-4" rx="4" ry="7" fill="#e8fbff" />
+    </svg>
   );
 }
 

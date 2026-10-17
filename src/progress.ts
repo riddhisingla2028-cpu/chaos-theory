@@ -5,6 +5,8 @@ import { CHAOS_KINDS, type ChaosKind, type GameMode } from './game/engine';
 import { ENDLESS_MODES, STAGES, TRIALS, starsFor, type EndlessId } from './game/stages';
 import { BEST_KEY, loadBest, type KeyValueStore } from './storage';
 import { PURCHASES_AVAILABLE } from './monetization/entitlements';
+import type { ShipId } from './mission/render';
+import { MISSIONS, type MissionId } from './mission/sim';
 import {
   addHistory,
   applyChallenges,
@@ -39,6 +41,7 @@ export interface Settings {
   highContrast: boolean;
   trail: TrailId;
   victory: VictoryId;
+  ship: ShipId;
   shake: boolean;
   joyMode: JoyMode;
   joySize: JoySize;
@@ -94,6 +97,18 @@ export interface Progress {
   history: MatchEntry[];
   /** Per level: attempts, failed attempts (deaths) and the fastest clear in seconds. */
   stageStats: Record<number, StageStats>;
+  /** Spacecraft campaign records, per mission id. */
+  missions: Record<string, MissionRecord>;
+}
+
+export interface MissionRecord {
+  completed: boolean;
+  stars: number; // best: 1 for completion + 1 per optional objective
+  best: number; // best score of a completed run
+  fastest: number | null; // seconds, completed runs only
+  secondaries: boolean[]; // optional objectives ever achieved (in a completed run)
+  attempts: number;
+  failures: number;
 }
 
 export interface StageStats {
@@ -176,6 +191,7 @@ export function defaultProgress(): Progress {
       highContrast: false,
       trail: 'classic',
       victory: 'confetti',
+      ship: 'arrow',
       shake: true,
       joyMode: 'float',
       joySize: 'M',
@@ -186,6 +202,7 @@ export function defaultProgress(): Progress {
     challenges: { daily: null, weekly: null },
     history: [],
     stageStats: {},
+    missions: {},
   };
 }
 
@@ -510,6 +527,7 @@ export function loadProgress(storage: KeyValueStore | null = browserStorage()): 
       if (!Array.isArray(merged.history)) merged.history = [];
       if (!merged.challenges || typeof merged.challenges !== 'object') merged.challenges = { daily: null, weekly: null };
       if (!merged.stageStats || typeof merged.stageStats !== 'object') merged.stageStats = {};
+      if (!merged.missions || typeof merged.missions !== 'object' || Array.isArray(merged.missions)) merged.missions = {};
       for (const k of ['sfxVolume', 'musicVolume'] as const) {
         const v = merged.settings[k];
         if (typeof v !== 'number' || !Number.isFinite(v)) merged.settings[k] = base.settings[k];
@@ -545,4 +563,110 @@ export function saveProgress(p: Progress, storage: KeyValueStore | null = browse
   } catch {
     // Storage unavailable: progress lasts for this session only.
   }
+}
+
+// ---------- Spacecraft missions ----------
+
+export interface ShipDef {
+  id: ShipId;
+  name: string;
+  req: string;
+  premium?: boolean;
+  unlocked: (p: Progress) => boolean;
+}
+
+const missionDone = (p: Progress, i: number) => !!p.missions[MISSIONS[i].id]?.completed;
+
+/** Spacecraft hulls. Purely cosmetic: every hull has the same size, speed and hit circle. */
+export const SHIPS: readonly ShipDef[] = [
+  { id: 'arrow', name: 'Arrow', req: 'Default', unlocked: () => true },
+  { id: 'interceptor', name: 'Interceptor', req: 'Complete Mission 02', unlocked: (p) => missionDone(p, 1) },
+  { id: 'manta', name: 'Manta', req: 'Complete Mission 04', unlocked: (p) => missionDone(p, 3) },
+  { id: 'phantom', name: 'Phantom', req: 'Chaos+', premium: true, unlocked: () => hasVerifiedChaosPlus() },
+];
+
+export const equippedShip = (p: Progress): ShipId => {
+  const s = SHIPS.find((x) => x.id === p.settings.ship);
+  return s && s.unlocked(p) ? s.id : 'arrow';
+};
+
+export const isMissionUnlocked = (p: Progress, i: number) => i === 0 || missionDone(p, i - 1);
+export const missionsCompleted = (p: Progress) => MISSIONS.filter((m) => p.missions[m.id]?.completed).length;
+/** The mission to play next: the first one not yet completed (or the last, once all are done). */
+export const nextMission = (p: Progress) => {
+  const i = MISSIONS.findIndex((m) => !p.missions[m.id]?.completed);
+  return i < 0 ? MISSIONS.length - 1 : i;
+};
+
+export interface MissionResult {
+  id: MissionId;
+  won: boolean;
+  score: number;
+  time: number;
+  stars: number;
+  secondaries: boolean[];
+  coresTaken: number;
+  kills: number;
+  bossDefeated: boolean;
+}
+
+export interface MissionOutcome {
+  progress: Progress;
+  previous: MissionRecord | null;
+  firstClear: boolean;
+  isNewBest: boolean;
+  xpLines: XpLine[];
+  xpGained: number;
+  xpBefore: number;
+  challengesCompleted: CompletedChallenge[];
+  newShips: string[];
+  newCosmetics: string[];
+}
+
+/** Records a finished mission run. Rewards come only from what actually happened in the run. */
+export function applyMission(prev: Progress, r: MissionResult, now: Date = new Date()): MissionOutcome {
+  const p: Progress = structuredClone(prev);
+  const shipsBefore = SHIPS.filter((s) => s.unlocked(prev)).map((s) => s.id);
+  const old = p.missions[r.id] ?? null;
+  const rec: MissionRecord = old ? { ...old, secondaries: [...old.secondaries] } : { completed: false, stars: 0, best: 0, fastest: null, secondaries: [false, false], attempts: 0, failures: 0 };
+  rec.attempts += 1;
+  const firstClear = r.won && !rec.completed;
+  const isNewBest = r.won && r.score > rec.best;
+  if (r.won) {
+    rec.completed = true;
+    rec.stars = Math.max(rec.stars, r.stars);
+    rec.best = Math.max(rec.best, r.score);
+    rec.fastest = rec.fastest === null ? r.time : Math.min(rec.fastest, r.time);
+    rec.secondaries = rec.secondaries.map((v, i) => v || !!r.secondaries[i]);
+  } else rec.failures += 1;
+  p.missions = { ...p.missions, [r.id]: rec };
+  p.runs++;
+  p.totalTime += r.time;
+  p.orbsTotal += r.coresTaken;
+
+  const xpLines: XpLine[] = [];
+  if (r.won) {
+    xpLines.push({ label: 'Mission complete', xp: 120 });
+    const met = r.secondaries.filter(Boolean).length;
+    if (met) xpLines.push({ label: `${met} optional objective${met === 1 ? '' : 's'}`, xp: met * 40 });
+    if (firstClear) xpLines.push({ label: 'First completion', xp: 150 });
+  } else {
+    const flown = Math.min(60, Math.floor(r.time));
+    if (flown > 0) xpLines.push({ label: `Flew ${flown}s`, xp: flown });
+  }
+  if (r.kills > 0) xpLines.push({ label: `${r.kills} drone${r.kills === 1 ? '' : 's'} destroyed`, xp: Math.min(100, r.kills * 6) });
+  const ch = applyChallenges(
+    p.challenges,
+    { mode: 'stage', won: r.won, time: r.time, orbs: r.coresTaken, nearMisses: 0, bosses: r.bossDefeated ? 1 : 0, stars: r.won ? r.stars : 0, firstClear },
+    now,
+  );
+  p.challenges = ch.state;
+  for (const c of ch.completed) xpLines.push({ label: `${c.scope === 'daily' ? 'Daily' : 'Weekly'} challenge: ${c.def.text}`, xp: c.def.xp });
+  const xpGained = xpLines.reduce((n, l) => n + l.xp, 0);
+  const xpBefore = p.xp;
+  p.xp += xpGained;
+  const def = MISSIONS.find((m) => m.id === r.id)!;
+  p.history = addHistory(p.history, { mode: 'mission', label: `${def.code} ${def.name}`, won: r.won, score: r.score, time: r.time, xp: xpGained, date: now.toISOString() });
+  const newShips = SHIPS.filter((s) => !shipsBefore.includes(s.id) && s.unlocked(p)).map((s) => `${s.name} spacecraft`);
+  return { progress: p, previous: old, firstClear, isNewBest, xpLines, xpGained, xpBefore, challengesCompleted: ch.completed, newShips, newCosmetics: unlockedBetween(xpBefore, p.xp) };
 }

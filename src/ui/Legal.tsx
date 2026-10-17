@@ -49,7 +49,7 @@ export function LegalScreen({ onBack }: { onBack: () => void }) {
                 server. We do not store it on our server.
               </li>
               <li>
-                <strong>Advertising:</strong> there are no ads and no ad tracking.
+                <strong>Advertising:</strong> some menu screens show placeholder panels reading &ldquo;Your brand here&rdquo;. They are part of the game itself: there are no advertisers or sponsors, no ad network, no third-party ad scripts and no ad tracking, and nothing is ever shown during gameplay.
               </li>
             </ul>
           </section>
