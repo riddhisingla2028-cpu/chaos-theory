@@ -43,6 +43,7 @@ export interface Settings {
   victory: VictoryId;
   ship: ShipId;
   shake: boolean;
+  aimAssist: boolean; // missions: straighten shots aimed within a few degrees of a target
   joyMode: JoyMode;
   joySize: JoySize;
   shape: ShapeId;
@@ -193,6 +194,7 @@ export function defaultProgress(): Progress {
       victory: 'confetti',
       ship: 'arrow',
       shake: true,
+      aimAssist: true,
       joyMode: 'float',
       joySize: 'M',
       shape: 'square',

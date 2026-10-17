@@ -145,7 +145,7 @@ function ShareButton({ result }: { result: Result }) {
   const { summary, outcome } = result;
   const level = summary.mode === 'stage' ? STAGES[summary.stage] : null;
   const endless = isEndlessMode(summary.mode) ? endlessMode(summary.mode) : null;
-  const accent = level?.accent ?? endless?.accent ?? (summary.mode === 'trial' ? TRIALS[summary.stage].accent : [79, 227, 240]);
+  const accent = level?.accent ?? endless?.accent ?? (summary.mode === 'trial' ? TRIALS[summary.stage].accent : [76, 157, 255]);
   const card: CardData = {
     kicker: level ? `Level ${summary.stage + 1} · ${level.name}` : result.label,
     headline: summary.mode === 'stage' ? (summary.won ? 'Level complete' : 'So close') : outcome.isNewBest ? 'New personal best' : 'Run over',

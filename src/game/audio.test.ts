@@ -196,3 +196,44 @@ describe('separate sound and music volume', () => {
     expect(sfx.volumes).toEqual({ sfx: 0, music: 0.25 });
   });
 });
+
+describe('engine sound', () => {
+  const running = async () => {
+    const ctx = new FakeContext();
+    const { sfx } = make(ctx);
+    await sfx.unlock();
+    return { sfx, ctx };
+  };
+
+  it('runs one engine loop that follows thrust, never two', async () => {
+    const { sfx } = await running();
+    sfx.setEngine(0.2);
+    sfx.setEngine(0.9);
+    sfx.setEngine(0.5);
+    expect(sfx.engineLoops).toBe(1);
+    sfx.setEngine(null);
+    expect(sfx.engineLoops).toBe(0);
+  });
+
+  it('mute and sound volume 0 silence the engine; unmuting brings it back while still flying', async () => {
+    const { sfx } = await running();
+    sfx.setEngine(0.5);
+    sfx.setMuted(true);
+    expect(sfx.engineLoops).toBe(0);
+    sfx.setMuted(false);
+    expect(sfx.engineLoops).toBe(1);
+    sfx.setVolumes(0, 1);
+    expect(sfx.engineLoops).toBe(0);
+  });
+
+  it('does nothing before audio is unlocked, and stops when the browser suspends audio', async () => {
+    const ctx = new FakeContext();
+    const { sfx } = make(ctx);
+    sfx.setEngine(0.5);
+    expect(sfx.engineLoops).toBe(0);
+    await sfx.unlock();
+    expect(sfx.engineLoops).toBe(1);
+    ctx.setState('suspended');
+    expect(sfx.engineLoops).toBe(0);
+  });
+});

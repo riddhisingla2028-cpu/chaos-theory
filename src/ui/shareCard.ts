@@ -14,7 +14,7 @@ export interface CardData {
 
 const W = 1080;
 const H = 1350;
-const DISPLAY = "'Unbounded', 'Inter', ui-sans-serif, system-ui, sans-serif";
+const DISPLAY = "'Rajdhani', 'Inter', ui-sans-serif, system-ui, sans-serif";
 const BODY = "'Inter', ui-sans-serif, system-ui, sans-serif";
 
 export function drawCard(ctx: CanvasRenderingContext2D, d: CardData): void {

@@ -25,7 +25,10 @@ export type SoundName =
   | 'hit'
   | 'explode'
   | 'chronoOn'
-  | 'chronoOff';
+  | 'chronoOff'
+  | 'alarm'
+  | 'launch'
+  | 'capitalDown';
 
 type Wave = OscillatorType;
 
@@ -70,6 +73,8 @@ export class Sfx {
   private lastShot = 0;
   private ambient: { gain: GainNode; nodes: AudioScheduledSourceNode[] } | null = null;
   private wantAmbient = false;
+  private engine: { gain: GainNode; filter: BiquadFilterNode; osc: OscillatorNode; nodes: AudioScheduledSourceNode[] } | null = null;
+  private engineLevel: number | null = null;
   private state: AudioState = 'locked';
   private listeners = new Set<(s: AudioState) => void>();
   muted = false;
@@ -89,8 +94,13 @@ export class Sfx {
   private setState(next: AudioState): void {
     if (next === this.state) return;
     this.state = next;
-    if (next === 'running') this.syncAmbient();
-    else this.stopAmbient();
+    if (next === 'running') {
+      this.syncAmbient();
+      this.syncEngine();
+    } else {
+      this.stopAmbient();
+      this.stopEngine();
+    }
     this.listeners.forEach((fn) => fn(next));
   }
 
@@ -186,6 +196,7 @@ export class Sfx {
   setMuted(muted: boolean): void {
     this.muted = muted;
     this.syncAmbient();
+    this.syncEngine();
   }
 
   /**
@@ -204,6 +215,7 @@ export class Sfx {
       // Audio must never break the game.
     }
     this.syncAmbient();
+    this.syncEngine();
   }
 
   get volumes(): { sfx: number; music: number } {
@@ -310,7 +322,8 @@ export class Sfx {
         const now = this.ctx!.currentTime;
         if (now - this.lastShot < 0.08) return;
         this.lastShot = now;
-        this.tone(1400, 0.05, 'square', 0.07, 0, 700);
+        // A short laser zap with a falling pitch
+        this.tone(1800, 0.07, 'sawtooth', 0.06, 0, 520);
         break;
       }
       case 'enemyShot':
@@ -321,8 +334,10 @@ export class Sfx {
         this.tone(140, 0.3, 'square', 0.35, 0, 60);
         break;
       case 'explode':
-        this.noise(0.5, 0.5, 120, 2400);
-        this.tone(90, 0.5, 'sawtooth', 0.3, 0, 35);
+        // Crack, boom and a low rumbling tail
+        this.noise(0.18, 0.45, 2400, 600);
+        this.noise(0.7, 0.4, 500, 90);
+        this.tone(70, 0.7, 'sine', 0.45, 0, 30);
         break;
       case 'chronoOn':
         // A falling, reverberant sweep: time slows.
@@ -334,6 +349,27 @@ export class Sfx {
         // A rising snap back to full speed.
         this.tone(220, 0.35, 'sawtooth', 0.25, 0, 990);
         this.noise(0.25, 0.3, 800, 6000);
+        break;
+      case 'alarm':
+        // Two-tone warship alarm
+        [0, 0.36].forEach((d) => {
+          this.tone(620, 0.16, 'square', 0.12, d);
+          this.tone(440, 0.16, 'square', 0.12, d + 0.18);
+        });
+        break;
+      case 'launch':
+        // Mission introduction: a rising engine swell and a pressure release
+        this.tone(55, 1.1, 'sawtooth', 0.22, 0, 165);
+        this.tone(110, 0.9, 'triangle', 0.18, 0.1, 330);
+        this.noise(0.9, 0.22, 200, 3800);
+        break;
+      case 'capitalDown':
+        // A capital-class hull breaking apart: staggered blasts over a long sub-bass collapse
+        [0, 0.18, 0.4, 0.7].forEach((d, i) => {
+          this.noise(0.5, 0.4 - i * 0.06, 1800, 120, d);
+        });
+        this.tone(60, 2.2, 'sine', 0.5, 0, 22);
+        this.tone(140, 1.4, 'sawtooth', 0.12, 0.2, 40);
         break;
       case 'levelup':
         [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone(f, 0.35, 'triangle', 0.4, i * 0.07));
@@ -412,7 +448,88 @@ export class Sfx {
     osc.stop(t0 + dur + 0.02);
   }
 
-  private noise(dur: number, vol: number, from = 900, to = 900): void {
+  /**
+   * The ship's engine: a continuous low rumble whose pitch and loudness follow thrust (0 to 1).
+   * Pass null to stop it. Runs on the sound-effects bus, so mute and the sound volume apply;
+   * there is never more than one engine loop.
+   */
+  setEngine(level: number | null): void {
+    this.engineLevel = level === null || !Number.isFinite(level) ? null : Math.min(1, Math.max(0, level));
+    this.syncEngine();
+  }
+
+  /** Number of live engine loops (for tests: must never exceed 1). */
+  get engineLoops(): number {
+    return this.engine ? 1 : 0;
+  }
+
+  private syncEngine(): void {
+    if (this.engineLevel === null || this.muted || this.sfxVolume <= 0 || this.state !== 'running') {
+      this.stopEngine();
+      return;
+    }
+    if (!this.engine) this.startEngine();
+    const e = this.engine;
+    if (!e || !this.ctx) return;
+    try {
+      const now = this.ctx.currentTime;
+      const k = this.engineLevel;
+      e.gain.gain.setTargetAtTime(0.05 + k * 0.12, now, 0.12);
+      e.filter.frequency.setTargetAtTime(180 + k * 620, now, 0.12);
+      e.osc.frequency.setTargetAtTime(46 + k * 26, now, 0.15);
+    } catch {
+      // Audio must never break the game.
+    }
+  }
+
+  private startEngine(): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.master || this.engine) return;
+    try {
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 200;
+      // Rumble: looping filtered noise plus a low detuned hum
+      const len = Math.floor(ctx.sampleRate * 1.5);
+      const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.loop = true;
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = 50;
+      const hum = ctx.createGain();
+      hum.gain.value = 0.25;
+      src.connect(filter);
+      osc.connect(hum).connect(filter);
+      filter.connect(gain).connect(this.sfxBus ?? this.master);
+      src.start();
+      osc.start();
+      this.engine = { gain, filter, osc, nodes: [src, osc] };
+    } catch {
+      this.engine = null;
+    }
+  }
+
+  private stopEngine(): void {
+    const ctx = this.ctx;
+    const e = this.engine;
+    if (!ctx || !e) return;
+    this.engine = null;
+    try {
+      e.gain.gain.cancelScheduledValues(ctx.currentTime);
+      e.gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.08);
+      e.nodes.forEach((n) => n.stop(ctx.currentTime + 0.4));
+    } catch {
+      // already stopped
+    }
+  }
+
+  private noise(dur: number, vol: number, from = 900, to = 900, delay = 0): void {
     const ctx = this.ctx!;
     const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
     const data = buffer.getChannelData(0);
@@ -421,11 +538,11 @@ export class Sfx {
     src.buffer = buffer;
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(from, ctx.currentTime);
-    if (to !== from) filter.frequency.exponentialRampToValueAtTime(to, ctx.currentTime + dur);
+    filter.frequency.setValueAtTime(from, ctx.currentTime + delay);
+    if (to !== from) filter.frequency.exponentialRampToValueAtTime(to, ctx.currentTime + delay + dur);
     const gain = ctx.createGain();
     gain.gain.value = vol;
     src.connect(filter).connect(gain).connect(this.sfxBus ?? this.master!);
-    src.start();
+    src.start(ctx.currentTime + delay);
   }
 }

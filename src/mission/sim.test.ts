@@ -12,47 +12,9 @@ import {
   stepMission,
   wallAt,
   type MissionId,
-  type MissionState,
-  type Vec,
 } from './sim';
 
-const DT = 1 / 60;
-
-/** Remove hazards so a route test checks only objectives and geometry. */
-function calm(m: MissionState): void {
-  m.rocks = [];
-  m.rockSpawn = null;
-  m.barriers = [];
-  m.pulses = [];
-  m.pulseEvery = 0;
-  m.bullets = m.bullets.filter((b) => b.from === 'player');
-  m.chrono.nextSpawn = Infinity;
-  m.chrono.pickup = null;
-}
-
-/** Steer straight at a (possibly moving) target until close, the mission ends, or time runs out. */
-function flyTo(m: MissionState, target: Vec | (() => Vec), opts: { within?: number; maxT?: number; calmWorld?: boolean } = {}): boolean {
-  const within = opts.within ?? 18;
-  const end = m.realTime + (opts.maxT ?? 20);
-  while (m.status === 'playing' && m.realTime < end) {
-    if (opts.calmWorld !== false) calm(m);
-    const t = typeof target === 'function' ? target() : target;
-    const dx = t.x - m.ship.x;
-    const dy = t.y - m.ship.y;
-    const d = Math.hypot(dx, dy);
-    if (d < within) return true;
-    stepMission(m, { x: dx / d, y: dy / d }, DT);
-  }
-  return false;
-}
-
-function hold(m: MissionState, seconds: number): void {
-  const end = m.realTime + seconds;
-  while (m.status === 'playing' && m.realTime < end) {
-    calm(m);
-    stepMission(m, { x: 0, y: 0 }, DT);
-  }
-}
+import { DT, calm, combatPilot, flyTo, hold, shootDown } from './testkit';
 
 const make = (id: MissionId, seed = 7) => createMission(missionById(id), seed);
 
@@ -79,7 +41,7 @@ describe('mission catalogue', () => {
 });
 
 describe('Mission 01 · First Contact', () => {
-  it('the portal opens only after five cores, and entering it wins', () => {
+  it('cores first, then the blocked lane must be shot clear; only then does the portal open and win', () => {
     const m = make('first-contact');
     flyTo(m, { x: 500, y: 110 }, { within: 4, maxT: 6 }); // fly right into the closed portal
     expect(m.status).toBe('playing'); // no win while it is closed
@@ -87,11 +49,20 @@ describe('Mission 01 · First Contact', () => {
     expect(m.status).toBe('playing');
     for (const c of [{ x: 160, y: 620 }, { x: 840, y: 760 }, { x: 500, y: 520 }, { x: 820, y: 300 }, { x: 180, y: 220 }]) flyTo(m, c, { within: 8 });
     expect(m.cores.every((c) => c.taken)).toBe(true);
+    // Phase 2: debris now blocks the lane, and the portal stays shut until it is shot apart.
+    expect(objectiveView(m).title).toMatch(/extraction lane/i);
+    expect(m.rocks.filter((r) => r.tag === 'blocker')).toHaveLength(3);
+    expect(m.portal!.open).toBe(false);
+    for (let k = 0; k < 3; k++) {
+      const blocker = () => m.rocks.find((r) => r.tag === 'blocker') ?? null;
+      const id = blocker()!.id;
+      expect(shootDown(m, blocker, () => !m.rocks.some((r) => r.id === id))).toBe(true);
+    }
     expect(m.portal!.open).toBe(true);
     expect(objectiveView(m).text).toMatch(/portal/i);
     flyTo(m, { x: 500, y: 110 }, { within: 5 });
     expect(m.status).toBe('won');
-    expect(starsFor(m)).toBeGreaterThanOrEqual(2); // no damage was taken
+    expect(m.phasesDone).toEqual(['Recover the fuel cores', 'Clear the extraction lane', 'Reach extraction']);
   });
 
   it('three hits destroy the ship and fail the mission, with a reason', () => {
@@ -167,37 +138,26 @@ describe('Mission 02 · Shattered Orbit', () => {
 });
 
 describe('Mission 03 · Breach Protocol (combat)', () => {
-  it('the blaster only fires with a target in range, and bolts damage drones', () => {
+  it('the blaster fires only when the player presses fire, even with enemies right ahead', () => {
     const m = make('breach-protocol');
     calm(m);
-    stepMission(m, { x: 0, y: 0 }, DT);
-    expect(m.drones.length).toBe(3);
-    expect(m.bullets.filter((b) => b.from === 'player').length).toBe(0); // warping in / out of range
-    for (let i = 0; i < 120; i++) stepMission(m, { x: 0, y: -1 }, DT);
-    expect(m.target).not.toBeNull();
-    expect(m.events.length + m.bullets.length).toBeGreaterThan(0);
+    for (let i = 0; i < 90; i++) stepMission(m, { x: 0, y: -0.05 }, DT); // nose up at the first wave
+    expect(m.bullets.filter((b) => b.from === 'player')).toHaveLength(0);
+    stepMission(m, { x: 0, y: -0.05, fire: true }, DT);
+    expect(m.bullets.filter((b) => b.from === 'player')).toHaveLength(1);
   });
 
-  it('destroying all twelve attackers (three waves) while the frigate survives wins; nothing is awarded earlier', () => {
+  it('hold the line, then the hive carrier appears; destroying it and the stragglers with the Aegis alive wins', () => {
     const m = make('breach-protocol');
-    const end = 150;
     const frigate = m.allies[0];
-    while (m.status === 'playing' && m.realTime < end) {
-      m.ship.invuln = 5; // scripted pilot: survive to test the objective logic
-      // Defend the frigate first: go for whatever is closest to it.
-      const target = m.drones.filter((d) => d.spawnIn === 0).sort((a, b) => Math.hypot(a.x - frigate.x, a.y - frigate.y) - Math.hypot(b.x - frigate.x, b.y - frigate.y))[0];
-      let inp = { x: 0, y: 0 };
-      if (target) {
-        const dx = target.x - m.ship.x;
-        const dy = target.y - m.ship.y;
-        const d = Math.hypot(dx, dy);
-        inp = d > 260 ? { x: dx / d, y: dy / d } : { x: -dy / d, y: dx / d };
-      }
-      if (m.cleared < 12) expect(m.status).toBe('playing');
-      stepMission(m, inp, DT);
+    let sawHive = false;
+    while (m.status === 'playing' && m.realTime < 200) {
+      combatPilot(m);
+      if (m.drones.some((d) => d.kind === 'hive')) sawHive = true;
+      if (m.phase === 0) expect(m.drones.some((d) => d.kind === 'hive')).toBe(false);
     }
-    expect(m.cleared).toBe(12);
-    expect(m.kills).toBeGreaterThanOrEqual(8); // most were shot down by the blaster
+    expect(sawHive).toBe(true);
+    expect(m.phasesDone).toEqual(['Hold the line', 'Destroy the hive carrier', 'Clear the remaining attackers']);
     expect(frigate.destroyed).toBe(false);
     expect(m.status).toBe('won');
   });
@@ -227,19 +187,31 @@ describe('Mission 04 · The Collapse', () => {
     expect(m.failReason).toMatch(/collapse/i);
   });
 
-  it('a pilot who keeps moving escapes, collecting all three data cores on the way', () => {
+  it('blast doors block the way until their switches are held; a moving pilot opens both and escapes', () => {
     const m = make('collapse');
     const movingGap = () => {
       const w = wallAt(m.walls[4], m.time);
       return { x: w.x + w.w / 2 > 500 ? 70 : 930, y: 700 };
     };
-    for (const p of [{ x: 380, y: 1900 }, { x: 380, y: 1700 }, { x: 850, y: 1540 }, { x: 620, y: 1350 }, { x: 620, y: 1150 }, { x: 150, y: 1020 }]) flyTo(m, p);
+    for (const p of [{ x: 380, y: 1900 }, { x: 380, y: 1700 }, { x: 850, y: 1540 }]) flyTo(m, p);
+    // Door A is shut: flying at the gap does not get through.
+    flyTo(m, { x: 620, y: 1150 }, { maxT: 1.5 });
+    expect(m.ship.y).toBeGreaterThan(1250);
+    flyTo(m, { x: 620, y: 1380 });
+    hold(m, 0.9);
+    expect(m.switches[0].active).toBe(true);
+    for (const p of [{ x: 620, y: 1150 }, { x: 150, y: 1020 }]) flyTo(m, p);
     flyTo(m, () => ({ ...movingGap(), y: 880 }), { within: 30 });
     flyTo(m, movingGap, { within: 30 });
-    for (const p of [{ x: 820, y: 620 }, { x: 500, y: 560 }, { x: 500, y: 400 }]) flyTo(m, p);
+    flyTo(m, { x: 820, y: 620 });
+    flyTo(m, { x: 500, y: 570 });
+    hold(m, 0.9);
+    expect(m.switches[1].active).toBe(true);
+    flyTo(m, { x: 500, y: 400 });
     flyTo(m, { x: 500, y: 120 }, { within: 5 });
     expect(m.status).toBe('won');
     expect(secondariesMet(m)[0]).toBe(true);
+    expect(m.phasesDone).toEqual(['Open blast door A', 'Open blast door B', 'Reach the escape portal']);
   });
 });
 
@@ -271,7 +243,7 @@ describe('Mission 05 · Core Meltdown', () => {
     expect(m.status).toBe('won');
   });
 
-  it('running out of time loses the mission', () => {
+  it('core stability runs out if nothing is stabilised: the core goes critical', () => {
     const m = make('meltdown');
     for (let i = 0; i < 60 * 95 && m.status === 'playing'; i++) {
       calm(m);
@@ -292,40 +264,79 @@ describe('Mission 05 · Core Meltdown', () => {
 });
 
 describe('Mission 06 · The Guardian', () => {
-  it('cannot be damaged while shielded; the shield drops on a cycle', () => {
+  it('the shield holds while any generator stands; destroying them all exposes the core, then they reboot', () => {
     const m = make('guardian');
-    m.ship.x = 500;
-    m.ship.y = 560;
-    let shieldedHits = 0;
-    let opened = false;
-    for (let i = 0; i < 60 * 6.5; i++) {
+    const gens = () => m.drones.filter((d) => d.tag === 'generator' && d.hp > 0);
+    hold(m, 1, false); // generators warp in
+    expect(gens()).toHaveLength(2);
+    expect(m.boss!.shielded).toBe(true);
+    // Time alone never drops it.
+    for (let i = 0; i < 60 * 8; i++) {
       m.ship.invuln = 5;
-      m.bullets = m.bullets.filter((b) => b.from === 'player');
-      const hp = m.boss!.hp;
-      const shielded = m.boss!.shielded;
-      stepMission(m, { x: 0, y: 0 }, DT);
-      if (shielded && m.boss!.hp < hp) shieldedHits++;
-      if (!m.boss!.shielded) opened = true;
+      stepMission(m, { x: 0, y: m.ship.y < 700 ? 0.4 : 0 }, DT);
     }
-    expect(shieldedHits).toBe(0);
-    expect(opened).toBe(true);
+    expect(m.status).toBe('playing');
+    expect(m.boss!.shielded).toBe(true);
+    // Bolts that hit the shield do no damage.
+    const hp = m.boss!.hp;
+    for (let i = 0; i < 60; i++) {
+      m.ship.invuln = 5;
+      stepMission(m, { x: (m.boss!.x - m.ship.x) * 0.0002, y: -0.06, fire: true }, DT);
+    }
+    expect(m.boss!.hp).toBe(hp);
+    // Shoot each generator down.
+    while (gens().length) {
+      const g = gens()[0];
+      m.ship.invuln = 5;
+      expect(shootDown(m, () => g, () => g.hp <= 0, 20, false)).toBe(true);
+    }
+    stepMission(m, { x: 0, y: 0 }, DT); // the boss reads its generators on the next tick
+    expect(m.boss!.shielded).toBe(false);
+    // The core stays exposed for a fixed window of world time, then the generators reboot.
+    const t0 = m.time;
+    while (m.status === 'playing' && !m.boss!.shielded && m.time - t0 < 7.5) {
+      m.ship.invuln = 5;
+      stepMission(m, { x: 0, y: m.ship.y < 700 ? 0.4 : 0 }, DT); // hold station against the singularity's pull
+    }
+    expect(m.status).toBe('playing');
+    expect(m.time - t0).toBeGreaterThan(6.9);
+    expect(m.boss!.shielded).toBe(true);
+    expect(gens().length).toBeGreaterThan(0); // rebooted
   });
 
-  it('destroying the Guardian starts the escape; reaching the portal (not the kill) wins', () => {
+  it('a full fight: generators, core, three phases; the kill starts the escape and reaching the portal wins', () => {
     const m = make('guardian');
     let phases = 0;
-    while (m.status === 'playing' && !m.escaping && m.realTime < 160) {
+    while (m.status === 'playing' && !m.escaping && m.realTime < 260) {
       m.ship.invuln = 5;
-      const dx = m.boss!.x - m.ship.x;
-      const inp = { x: Math.abs(dx) > 30 ? Math.sign(dx) : 0, y: m.ship.y < 600 ? 1 : m.ship.y > 660 ? -1 : 0 };
-      stepMission(m, inp, DT);
+      const gens = m.drones.filter((d) => d.tag === 'generator' && d.hp > 0 && d.spawnIn === 0);
+      const b = m.boss!;
+      if (b.shielded && gens.length) {
+        const g = gens.sort((p, q) => Math.hypot(p.x - m.ship.x, p.y - m.ship.y) - Math.hypot(q.x - m.ship.x, q.y - m.ship.y))[0];
+        const dx = g.x - m.ship.x;
+        const dy = g.y - m.ship.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const k = d > 220 ? 1 : 0.07;
+        stepMission(m, { x: (dx / d) * k, y: (dy / d) * k, fire: m.target === g.id }, DT);
+      } else {
+        // Hold a firing position below the core and keep the nose on it.
+        const tx = b.x;
+        const ty = 620;
+        const dx = tx - m.ship.x;
+        const dy = ty - m.ship.y;
+        const d = Math.hypot(dx, dy);
+        const aim = { x: b.x - m.ship.x, y: b.y - m.ship.y };
+        const ad = Math.hypot(aim.x, aim.y) || 1;
+        const inp = d > 40 ? { x: dx / d, y: dy / d } : { x: (aim.x / ad) * 0.07, y: (aim.y / ad) * 0.07 };
+        stepMission(m, { ...inp, fire: m.target === -1 }, DT);
+      }
       phases += m.events.filter((e) => e.type === 'boss-phase').length;
     }
     expect(phases).toBe(2);
     expect(m.escaping).toBe(true);
     expect(m.status).toBe('playing'); // not won yet
     expect(m.portal!.open).toBe(true);
-    while (m.status === 'playing' && m.realTime < 200) {
+    while (m.status === 'playing' && m.realTime < 320) {
       const dx = m.portal!.x - m.ship.x;
       const dy = m.portal!.y - m.ship.y;
       const d = Math.hypot(dx, dy) || 1;

@@ -55,9 +55,16 @@ export interface Rock {
   vy: number;
   r: number;
   spin: number;
+  tag?: string; // spawned for an objective
 }
 
-export type DroneKind = 'scout' | 'gunner' | 'raider' | 'turret';
+// generator: a stationary shield generator (the Guardian's shield holds while any is up).
+// hive: a stationary alien carrier that launches raiders. commander: a command raider that directs
+// the attack and tries to escape off the map.
+export type DroneKind = 'scout' | 'gunner' | 'raider' | 'turret' | 'generator' | 'hive' | 'commander';
+
+/** Kinds that hold position (they never fly, and they do not hold up the next wave). */
+export const STATIONARY: readonly DroneKind[] = ['turret', 'generator', 'hive'];
 
 /** Friendly ships the player must protect. Enemies attack them; losing them fails the mission. */
 export type AllyKind = 'transport' | 'cargo' | 'frigate' | 'capital';
@@ -87,6 +94,7 @@ export interface Pod {
   vx: number;
   vy: number;
   state: 'drifting' | 'towed' | 'saved';
+  found: boolean; // located by the ship's scanner (The Rescue)
 }
 
 export type PowerKind = 'shield' | 'overdrive' | 'repair';
@@ -105,6 +113,8 @@ export interface Drone {
   hitFlash: number;
   spawnIn: number; // > 0 while warping in (cannot hurt or be hurt)
   targetAlly: number | null; // raiders and some gunners go for a friendly ship instead of the player
+  tag?: string; // spawned for an objective (counted by that objective)
+  gone?: boolean; // left the battlefield (escaped): removed without an explosion or a kill
 }
 
 export interface Bullet {
@@ -140,6 +150,33 @@ export interface Reactor {
   active: boolean;
 }
 
+/** An emergency switch: hold position on it to open its blast door (Orbital Collapse). */
+export interface Switch {
+  x: number;
+  y: number;
+  r: number;
+  charge: number; // 0..1
+  active: boolean;
+  door: Wall; // removed from the world when the switch is thrown
+  name: string;
+}
+
+/**
+ * One step of an operation. Phases run in order; each must be completed by real gameplay state
+ * (its `done` check), and completing the last one wins the mission.
+ */
+export interface Phase {
+  id: string;
+  title: string;
+  /** Objective line and progress for the HUD. */
+  view: (m: MissionState) => { text: string; progress: number; count: string | null };
+  done: (m: MissionState) => boolean;
+  /** Runs when the phase begins (spawns, comms). */
+  enter?: (m: MissionState) => void;
+  /** Runs when the phase is completed. */
+  complete?: (m: MissionState) => void;
+}
+
 export interface Pulse {
   r: number; // current radius
   warn: number; // seconds of warning left before it expands
@@ -173,7 +210,7 @@ export type MissionEvent =
   | { type: 'gate'; x: number; y: number }
   | { type: 'reactor'; x: number; y: number }
   | { type: 'portal-open'; x: number; y: number }
-  | { type: 'shoot'; x: number; y: number }
+  | { type: 'shoot'; x: number; y: number; angle: number }
   | { type: 'enemy-shoot'; x: number; y: number }
   | { type: 'hit'; x: number; y: number }
   | { type: 'near'; x: number; y: number }
@@ -195,6 +232,10 @@ export type MissionEvent =
   | { type: 'combo'; count: number; mult: number; x: number; y: number }
   | { type: 'jump'; x: number; y: number }
   | { type: 'escape' }
+  | { type: 'comms'; text: string; alert: boolean }
+  | { type: 'objective'; done: string; next: string | null }
+  | { type: 'switch'; x: number; y: number }
+  | { type: 'deflect'; x: number; y: number }
   | { type: 'won' }
   | { type: 'lost'; reason: string };
 
@@ -218,6 +259,8 @@ export interface MissionDef {
   timeLimit: number | null; // world seconds; failing to finish in time loses the mission
   accent: [number, number, number];
   build: (m: MissionState, rnd: () => number) => void;
+  /** The operation, in order. Completing the last phase wins. */
+  phases: Phase[];
 }
 
 export interface MissionState {
@@ -267,7 +310,15 @@ export interface MissionState {
   killsNeeded: number;
   hitsTaken: number;
   score: number;
-  target: number | null; // id of the drone the blaster is locked on (-1 = boss)
+  /** What is in the blaster's line of fire right now (drone id, -1 boss, -2 - rock id), or null. */
+  target: number | null;
+  phase: number; // index into def.phases
+  phaseTime: number; // world seconds since the current phase began
+  phasesDone: string[]; // titles of completed phases, in order (debrief)
+  switches: Switch[];
+  stability: number | null; // Reactor Meltdown: 0..100; at 0 the core goes critical
+  /** Mission-specific state (ids of spawned objective targets, one-time alerts, outcomes). */
+  flags: Record<string, number>;
   events: MissionEvent[];
   nextId: number;
 }
@@ -279,9 +330,15 @@ export const SHIP_R = 13; // collision radius: matches the drawn hull's core
 const SHIP_SPEED = 400;
 const SHIP_RESPONSE = 12;
 const INVULN = 1.2;
-const FIRE_EVERY = 0.2;
-const FIRE_RANGE = 470;
-const BOLT_SPEED = 900;
+const FIRE_EVERY = 0.16;
+export const FIRE_RANGE = 620; // a bolt's travel before it expires
+export const BOLT_SPEED = 1100;
+export const BOLT_R = 5;
+export const ASSIST_CONE = 0.14; // radians (about 8 degrees) either side of the nose
+/** Distance from the ship's centre to the blaster muzzle at the nose (matches the drawn hulls, 22..30). */
+export const MUZZLE = 30;
+/** Hit radii for player bolts (match the drawn silhouettes). */
+export const HIT_R: Record<DroneKind, number> = { scout: 18, gunner: 22, raider: 18, turret: 24, generator: 22, hive: 46, commander: 24 };
 const ENEMY_BOLT_SPEED = 260;
 const AIM_TIME = 0.6; // drones glow before firing
 export const CHRONO_DURATION = 4; // real seconds
@@ -408,6 +465,348 @@ function ally(m: MissionState, kind: AllyKind, name: string, x: number, y: numbe
   return { id: m.nextId++, kind, name, x, y, hp, maxHp: hp, r, path, pathIdx: 0, speed, arrived: path.length === 0, destroyed: false, hitFlash: 0 };
 }
 
+
+// ---------- Operations: each mission is a sequence of phases ----------
+
+/** A radio message from command, triggered by something that just happened in the mission. */
+function comms(m: MissionState, text: string, alert = false): void {
+  m.events.push({ type: 'comms', text, alert });
+}
+
+const tagged = (m: MissionState, tag: string) => m.drones.filter((d) => d.tag === tag && d.hp > 0);
+const inPortal = (m: MissionState) => !!m.portal?.open && dist(m.ship, m.portal) < m.portal.r - 6;
+const pct = (k: number) => `${Math.round(Math.max(0, Math.min(1, k)) * 100)}%`;
+const living = (m: MissionState) => m.allies.filter((a) => !a.destroyed);
+/** How far the slowest surviving escorted ship has got along its route (0..1). */
+const convoyProgress = (m: MissionState) => {
+  const l = living(m);
+  return l.length ? Math.min(...l.map((a) => (a.arrived ? 1 : a.path.length ? a.pathIdx / a.path.length : 1))) : 0;
+};
+/** Spawn a group of enemies for an objective; the objective counts them down by tag. */
+function spawnTagged(m: MissionState, tag: string, kind: DroneKind, spots: Vec[], ally?: Ally): void {
+  for (const p of spots) {
+    const d = spawnDrone(m, kind, Math.max(40, Math.min(m.def.world.w - 40, p.x)), Math.max(40, Math.min(m.def.world.h - 40, p.y)));
+    d.tag = tag;
+    if (ally) d.targetAlly = ally.id;
+  }
+  m.flags[`${tag}Total`] = spots.length;
+}
+const killedOf = (m: MissionState, tag: string) => (m.flags[`${tag}Total`] ?? 0) - tagged(m, tag).length;
+
+const extractPhase = (title: string, text: string): Phase => ({
+  id: 'extract',
+  title,
+  view: () => ({ text, progress: 1, count: null }),
+  done: inPortal,
+});
+
+const P_FIRST_CONTACT: Phase[] = [
+  {
+    id: 'cores',
+    title: 'Recover the fuel cores',
+    view: (m) => {
+      const got = m.cores.filter((c) => c.taken).length;
+      return { text: 'Recover the fuel cores', progress: got / m.coresNeeded, count: `${got}/${m.coresNeeded}` };
+    },
+    done: (m) => m.cores.filter((c) => c.taken).length >= m.coresNeeded,
+  },
+  {
+    id: 'lane',
+    title: 'Clear the extraction lane',
+    enter: (m) => {
+      for (const [x, y] of [
+        [430, 200],
+        [500, 260],
+        [570, 200],
+      ])
+        m.rocks.push({ ...rockAt(m, x, y, 0, 0, 30), hp: 4, tag: 'blocker' });
+      comms(m, 'Tanks full. Extraction lane is blocked by debris: line up and break it with your blaster.', true);
+    },
+    view: (m) => {
+      const left = m.rocks.filter((r) => r.tag === 'blocker').length;
+      return { text: 'Blast the debris blocking extraction', progress: (3 - left) / 3, count: `${3 - left}/3` };
+    },
+    done: (m) => !m.rocks.some((r) => r.tag === 'blocker'),
+    complete: (m) => {
+      openPortal(m);
+      comms(m, 'Lane clear. Extraction portal is powering up.');
+    },
+  },
+  extractPhase('Reach extraction', 'Fly into the extraction portal'),
+];
+
+const P_SHATTERED: Phase[] = [
+  {
+    id: 'gates',
+    title: 'Pass the navigation gates',
+    view: (m) => {
+      const n = m.gates.filter((g) => g.passed).length;
+      return { text: 'Fly through the navigation gates in order', progress: n / m.gates.length, count: `${n}/${m.gates.length}` };
+    },
+    done: (m) => m.gates.every((g) => g.passed),
+    complete: (m) => comms(m, 'All gates passed. Exit portal is open.'),
+  },
+  extractPhase('Reach the exit portal', 'Reach the exit portal'),
+];
+
+const P_SWARM: Phase[] = [
+  {
+    id: 'hold',
+    title: 'Hold the line',
+    view: (m) => ({ text: 'Hold the line around the Aegis', progress: Math.min(1, m.cleared / 7), count: `${Math.min(7, m.cleared)}/7` }),
+    done: (m) => m.waves.length === 0 && m.drones.every((d) => STATIONARY.includes(d.kind)) && m.phaseTime > 0.5,
+  },
+  {
+    id: 'hive',
+    title: 'Destroy the hive carrier',
+    enter: (m) => {
+      spawnTagged(m, 'hive', 'hive', [{ x: 500, y: 320 }]);
+      m.flags.hiveNext = 2.5;
+      comms(m, 'Contact! A hive carrier is launching the swarm. Destroy it before it overwhelms the Aegis!', true);
+    },
+    view: (m) => {
+      const h = tagged(m, 'hive')[0];
+      return { text: 'Destroy the hive carrier', progress: h ? 1 - h.hp / h.maxHp : 1, count: h ? `${h.hp}/${h.maxHp}` : null };
+    },
+    done: (m) => tagged(m, 'hive').length === 0,
+    complete: (m) => comms(m, 'Hive carrier destroyed. Mop up the survivors.'),
+  },
+  {
+    id: 'mop',
+    title: 'Clear the remaining attackers',
+    view: (m) => ({ text: 'Clear the remaining attackers', progress: m.drones.length ? 0.5 : 1, count: `${m.drones.length} left` }),
+    done: (m) => m.drones.length === 0,
+  },
+];
+
+const P_COLLAPSE: Phase[] = [
+  {
+    id: 'door-a',
+    title: 'Open blast door A',
+    enter: (m) => comms(m, 'Blast doors are sealed ahead. Hold on each emergency switch to open them.', true),
+    view: (m) => ({ text: 'Hold on the emergency switch · blast door A', progress: m.switches[0].charge, count: null }),
+    done: (m) => m.switches[0].active,
+  },
+  {
+    id: 'door-b',
+    title: 'Open blast door B',
+    view: (m) => ({ text: 'Hold on the emergency switch · blast door B', progress: m.switches[1].charge, count: null }),
+    done: (m) => m.switches[1].active,
+  },
+  extractPhase('Reach the escape portal', 'Escape north to the portal'),
+];
+
+const P_MELTDOWN: Phase[] = [
+  {
+    id: 'reactors',
+    title: 'Stabilise the reactors',
+    view: (m) => {
+      const n = m.reactors.filter((r) => r.active).length;
+      return { text: 'Stabilise the reactors', progress: n / m.reactors.length, count: `${n}/${m.reactors.length}` };
+    },
+    done: (m) => m.reactors.every((r) => r.active),
+    complete: (m) => comms(m, 'Core stable for now. Evacuation portal open: get out!'),
+  },
+  extractPhase('Evacuate', 'Evacuate through the portal'),
+];
+
+const P_GUARDIAN: Phase[] = [
+  {
+    id: 'guardian',
+    title: 'Destroy the Guardian',
+    view: (m) => {
+      const b = m.boss!;
+      if (b.shielded) {
+        const k = killedOf(m, 'generator');
+        const n = m.flags.generatorTotal ?? 0;
+        return { text: 'Destroy the shield generators', progress: n ? k / n : 0, count: `${k}/${n}` };
+      }
+      return { text: 'Shield down: hit the core!', progress: 1 - b.hp / b.maxHp, count: `${Math.max(0, b.hp)}/${b.maxHp}` };
+    },
+    done: (m) => m.escaping,
+  },
+  extractPhase('Escape the singularity', 'ESCAPE! Fly south to the portal'),
+];
+
+const P_PURSUIT: Phase[] = [
+  {
+    id: 'escort',
+    title: 'Escort the Kestrel',
+    view: (m) => ({ text: 'Escort the Kestrel north', progress: convoyProgress(m), count: pct(convoyProgress(m)) }),
+    done: (m) => living(m).every((a) => a.pathIdx >= 2),
+  },
+  {
+    id: 'commander',
+    title: 'Intercept the command raider',
+    enter: (m) => {
+      const k = living(m)[0];
+      const x = k && k.x > 500 ? 120 : 880;
+      spawnTagged(m, 'commander', 'commander', [{ x, y: m.camY + 90 }], k);
+      m.flags.cmdEscapeAt = m.time + 22;
+      comms(m, 'Command raider detected, directing the raids. Take it down before it escapes!', true);
+    },
+    view: (m) => {
+      const c = tagged(m, 'commander')[0];
+      return { text: c ? 'Destroy the command raider' : 'Command raider gone', progress: c ? 1 - c.hp / c.maxHp : 1, count: c ? `${c.hp}/${c.maxHp}` : null };
+    },
+    done: (m) => tagged(m, 'commander').length === 0,
+    complete: (m) => {
+      if (m.flags.cmdKilled) {
+        comms(m, 'Command raider down. The raids are breaking up.');
+        if (m.spawner) m.spawner.every *= 1.3;
+      } else {
+        comms(m, 'The command raider escaped. Expect heavier raids.', true);
+        if (m.spawner) m.spawner.every *= 0.8;
+      }
+    },
+  },
+  {
+    id: 'gate',
+    title: 'Reach the jump gate',
+    view: (m) => ({ text: 'Get the Kestrel through the jump gate', progress: convoyProgress(m), count: pct(convoyProgress(m)) }),
+    done: (m) => living(m).length >= m.alliesNeeded && living(m).every((a) => a.arrived),
+    complete: escortArrived,
+  },
+];
+
+const P_RESCUE: Phase[] = [
+  {
+    id: 'recover',
+    title: 'Recover the first survivors',
+    enter: (m) => comms(m, 'Distress beacons are weak. Sweep the belt: your scanner locates pods within range.'),
+    view: (m) => rescueView(m),
+    done: (m) => m.pods.filter((p) => p.state === 'saved').length >= 3,
+  },
+  {
+    id: 'secure',
+    title: 'Secure the rescue area',
+    enter: (m) => {
+      const z = m.rescueZone!;
+      spawnTagged(m, 'boarders', 'scout', [
+        { x: z.x - 280, y: z.y - 260 },
+        { x: z.x + 280, y: z.y - 260 },
+        { x: z.x, y: z.y - 420 },
+      ]);
+      m.flags.bayLocked = 1;
+      comms(m, 'Raiders closing on the rescue ship! The bay is sealed until they are destroyed.', true);
+    },
+    view: (m) => ({ text: 'Secure the rescue area · bay sealed', progress: killedOf(m, 'boarders') / 3, count: `${killedOf(m, 'boarders')}/3` }),
+    done: (m) => tagged(m, 'boarders').length === 0,
+    complete: (m) => {
+      m.flags.bayLocked = 0;
+      comms(m, 'Rescue area secure. Bay doors open.');
+    },
+  },
+  {
+    id: 'recover-rest',
+    title: 'Recover the remaining survivors',
+    view: (m) => rescueView(m),
+    done: (m) => m.pods.every((p) => p.state === 'saved'),
+    complete: (m) => comms(m, 'All survivors aboard. Dock with the rescue ship.'),
+  },
+  {
+    id: 'dock',
+    title: 'Dock with the rescue ship',
+    view: () => ({ text: 'Dock with the rescue ship', progress: 1, count: null }),
+    done: (m) => !!m.rescueZone && dist(m.ship, m.rescueZone) < m.rescueZone.r,
+  },
+];
+
+function rescueView(m: MissionState) {
+  const saved = m.pods.filter((p) => p.state === 'saved').length;
+  const towing = m.pods.some((p) => p.state === 'towed');
+  return { text: towing ? 'Tow the pods into the rescue bay' : 'Locate and recover escape pods', progress: saved / m.pods.length, count: `${saved * 8}/${m.pods.length * 8} survivors` };
+}
+
+const P_CONVOY: Phase[] = [
+  {
+    id: 'escort',
+    title: 'Escort the convoy to the checkpoint',
+    view: (m) => ({ text: `Escort the convoy · ${living(m).length}/${m.allies.length} ships`, progress: convoyProgress(m), count: pct(convoyProgress(m)) }),
+    done: (m) => living(m).every((a) => a.pathIdx >= 2),
+  },
+  {
+    id: 'ambush',
+    title: 'Break the ambush',
+    enter: (m) => {
+      const l = living(m);
+      const lead = l.reduce((a, b) => (b.y < a.y ? b : a), l[0]);
+      spawnTagged(
+        m,
+        'ambush',
+        'gunner',
+        [-260, 0, 260].map((dx) => ({ x: lead.x + dx, y: lead.y - 380 })),
+        undefined,
+      );
+      for (const d of tagged(m, 'ambush')) d.targetAlly = l[Math.floor(m.rng() * l.length)].id;
+      comms(m, 'Ambush! Gunships ahead of the convoy.', true);
+    },
+    view: (m) => ({ text: 'Break the ambush', progress: killedOf(m, 'ambush') / 3, count: `${killedOf(m, 'ambush')}/3` }),
+    done: (m) => tagged(m, 'ambush').length === 0,
+    complete: (m) => comms(m, 'Ambush broken. Get the haulers to the relay.'),
+  },
+  {
+    id: 'deliver',
+    title: 'Deliver the convoy',
+    view: (m) => ({ text: `Deliver the haulers to the relay · ${living(m).length}/${m.allies.length}`, progress: convoyProgress(m), count: pct(convoyProgress(m)) }),
+    done: (m) => living(m).length >= m.alliesNeeded && living(m).every((a) => a.arrived),
+    complete: escortArrived,
+  },
+];
+
+const P_LAST_JUMP: Phase[] = [
+  {
+    id: 'hold',
+    title: 'Hold the line',
+    view: (m) => ({ text: 'Protect the Meridian · jump drive charging', progress: m.jump!.charge / m.jump!.duration, count: pct(m.jump!.charge / m.jump!.duration) }),
+    done: (m) => m.jump!.charge >= m.jump!.duration / 2,
+  },
+  {
+    id: 'bombers',
+    title: 'Destroy the bomber wing',
+    enter: (m) => {
+      const cap = living(m)[0];
+      spawnTagged(m, 'bombers', 'gunner', [
+        { x: 80, y: 120 },
+        { x: 920, y: 120 },
+        { x: 500, y: 60 },
+      ], cap);
+      comms(m, 'Bomber wing inbound, targeting the Meridian’s drive core!', true);
+    },
+    view: (m) => ({ text: 'Destroy the bomber wing', progress: killedOf(m, 'bombers') / 3, count: `${killedOf(m, 'bombers')}/3` }),
+    done: (m) => tagged(m, 'bombers').length === 0,
+  },
+  {
+    id: 'jump',
+    title: 'Protect the Meridian until the jump',
+    view: (m) => ({ text: 'Protect the Meridian until it jumps', progress: m.jump!.charge / m.jump!.duration, count: pct(m.jump!.charge / m.jump!.duration) }),
+    done: (m) => m.jump!.charge >= m.jump!.duration,
+    complete: (m) => {
+      for (const a of living(m)) m.score += Math.round(800 * (a.hp / a.maxHp));
+      const cap = living(m)[0];
+      m.events.push({ type: 'jump', x: cap?.x ?? 500, y: cap?.y ?? 500 });
+    },
+  },
+];
+
+function escortArrived(m: MissionState): void {
+  const l = living(m);
+  for (const a of l) m.score += Math.round(400 * (a.hp / a.maxHp));
+  if (l[0]) m.events.push({ type: 'jump', x: l[0].x, y: l[0].y });
+}
+
+/** Raise the Guardian's shield generators (they warp in); the shield holds while any is up. */
+function raiseGenerators(m: MissionState, n: number): void {
+  const spots = [
+    { x: 170, y: 470 },
+    { x: 830, y: 470 },
+    { x: 500, y: 600 },
+  ].slice(0, n);
+  for (const d of tagged(m, 'generator')) d.hp = 0; // never two sets at once
+  m.drones = m.drones.filter((d) => d.tag !== 'generator');
+  spawnTagged(m, 'generator', 'generator', spots);
+}
+
 const MISSION_DEFS: MissionDef[] = [
   {
     id: 'first-contact',
@@ -415,17 +814,18 @@ const MISSION_DEFS: MissionDef[] = [
     code: '01',
     name: 'Asteroid Run',
     tagline: 'Fuel up inside a drifting asteroid field and reach extraction.',
-    briefing: 'Your scout ship came out of the jump inside an asteroid field with dry tanks. Recover five fuel cores drifting between the rocks, then fly into the extraction portal once it powers up. Rocks rip through hull plating: keep moving.',
-    objective: 'Collect 5 fuel cores, then reach extraction',
+    briefing: 'Your scout ship came out of the jump inside an asteroid field with dry tanks. Recover five fuel cores drifting between the rocks. Debris has drifted across the extraction lane: line your nose up with it and fire to break it apart, then fly into the portal. Rocks rip through hull plating: keep moving.',
+    objective: 'Recover 5 fuel cores, blast the blocked lane, reach extraction',
     secondaries: [
       { id: 'no-damage', text: 'Take no hull damage' },
-      { id: 'fast', text: 'Finish in under 30s' },
+      { id: 'fast', text: 'Finish in under 45s' },
     ],
     world: { w: W, h: W },
     maxHp: 3,
-    weapons: false,
+    weapons: true,
     timeLimit: null,
-    accent: [79, 227, 240],
+    accent: [110, 170, 255],
+    phases: P_FIRST_CONTACT,
     build(m) {
       m.ship.x = 500;
       m.ship.y = 820;
@@ -468,7 +868,8 @@ const MISSION_DEFS: MissionDef[] = [
     maxHp: 3,
     weapons: false,
     timeLimit: null,
-    accent: [155, 123, 255],
+    accent: [130, 140, 230],
+    phases: P_SHATTERED,
     build(m) {
       m.ship.x = 500;
       m.ship.y = 2480;
@@ -511,17 +912,18 @@ const MISSION_DEFS: MissionDef[] = [
     code: '03',
     name: 'Alien Swarm',
     tagline: 'Hold the line around a crippled frigate.',
-    briefing: 'The frigate Aegis is dead in space and an alien swarm is closing in. Raiders dive at the frigate; hunters chase you; gunners glow before they fire. Your blaster locks on and fires automatically: stay between the swarm and the Aegis.',
-    objective: 'Clear all 12 attackers and keep the frigate alive',
+    briefing: 'The frigate Aegis is dead in space and an alien swarm is closing in. Hold the line through the first waves, then find and destroy whatever is launching them. Raiders dive at the frigate; hunters chase you; gunners glow before they fire. The Aegis must survive.',
+    objective: 'Hold the line, destroy the hive carrier, keep the Aegis alive',
     secondaries: [
       { id: 'one-hit', text: 'Take at most 1 hit' },
-      { id: 'fast', text: 'Finish in under 60s' },
+      { id: 'fast', text: 'Finish in under 100s' },
     ],
     world: { w: W, h: W },
     maxHp: 4,
     weapons: true,
     timeLimit: null,
-    accent: [255, 140, 66],
+    accent: [240, 120, 50],
+    phases: P_SWARM,
     build(m) {
       m.ship.x = 500;
       m.ship.y = 820;
@@ -532,9 +934,8 @@ const MISSION_DEFS: MissionDef[] = [
       m.waves = [
         { spawn: [{ kind: 'scout', x: 200, y: 180 }, { kind: 'raider', x: 500, y: 120 }, { kind: 'scout', x: 800, y: 180 }] },
         { spawn: [{ kind: 'gunner', x: 160, y: 300 }, { kind: 'gunner', x: 840, y: 300 }, { kind: 'raider', x: 120, y: 120 }, { kind: 'raider', x: 880, y: 120 }] },
-        { spawn: [{ kind: 'gunner', x: 500, y: 130 }, { kind: 'raider', x: 120, y: 880 }, { kind: 'raider', x: 880, y: 880 }, { kind: 'gunner', x: 880, y: 500 }, { kind: 'scout', x: 120, y: 500 }] },
       ];
-      m.killsNeeded = 12;
+      m.killsNeeded = 0;
       m.allies = [ally(m, 'frigate', 'Frigate Aegis', 500, 600, 26, 46, [], 0)];
       m.alliesNeeded = 1;
     },
@@ -545,8 +946,8 @@ const MISSION_DEFS: MissionDef[] = [
     code: '04',
     name: 'Orbital Collapse',
     tagline: 'The orbital ring is breaking apart beneath you. Run.',
-    briefing: 'The orbital ring has lost its stabilisers and is tearing itself apart from the south. Fly north through the failing sections to the escape portal before the collapse catches you. Wreckage is falling through the shafts, and the collapse speeds up as it goes.',
-    objective: 'Reach the escape portal before the collapse catches you',
+    briefing: 'The orbital ring has lost its stabilisers and is tearing itself apart from the south. Two blast doors have sealed the way north: hold position on each emergency switch to open its door, then reach the escape portal before the collapse catches you. Wreckage is falling through the shafts.',
+    objective: 'Open both blast doors, then reach the portal ahead of the collapse',
     secondaries: [
       { id: 'cores', text: 'Recover all 3 data cores on the way' },
       { id: 'no-damage', text: 'Take no hull damage' },
@@ -555,7 +956,8 @@ const MISSION_DEFS: MissionDef[] = [
     maxHp: 3,
     weapons: false,
     timeLimit: null,
-    accent: [255, 79, 92],
+    accent: [255, 110, 70],
+    phases: P_COLLAPSE,
     build(m) {
       const H = 2400;
       m.ship.x = 500;
@@ -568,6 +970,14 @@ const MISSION_DEFS: MissionDef[] = [
         { x: 120, y: H - 1600, w: 300, h: 30, move: { dx: 460, dy: 0, period: 7, phase: 0 } },
         { x: 0, y: H - 1950, w: 360, h: 30 },
         { x: 640, y: H - 1950, w: 360, h: 30 },
+      ];
+      // Blast doors seal the two gaps until their emergency switches are thrown.
+      const doorA: Wall = { x: 540, y: H - 1150, w: 160, h: 30 };
+      const doorB: Wall = { x: 360, y: H - 1950, w: 280, h: 30 };
+      m.walls.push(doorA, doorB);
+      m.switches = [
+        { x: 620, y: H - 1020, r: 58, charge: 0, active: false, door: doorA, name: 'A' },
+        { x: 500, y: H - 1830, r: 58, charge: 0, active: false, door: doorB, name: 'B' },
       ];
       m.cores = [
         { x: 850, y: H - 860 },
@@ -587,7 +997,7 @@ const MISSION_DEFS: MissionDef[] = [
     code: '05',
     name: 'Reactor Meltdown',
     tagline: 'Stabilise three reactors under fire, then escape.',
-    briefing: 'The research station is heading for meltdown and its automated defences have turned on us. Hold position inside each stabiliser ring until it comes online; your blaster will engage the defence turrets. Heat pulses roll out from the core: slip through the gap in each ring.',
+    briefing: 'The research station is heading for meltdown. Core stability is falling: every reactor you bring online slows the decline, and the defence turrets are cutting the coolant lines, so destroying them helps too. Hold position inside each stabiliser ring until it comes online, then evacuate. Heat pulses roll out from the core: slip through the gap in each ring.',
     objective: 'Stabilise 3 reactors, then escape through the portal',
     secondaries: [
       { id: 'turrets', text: 'Destroy both defence turrets' },
@@ -596,8 +1006,9 @@ const MISSION_DEFS: MissionDef[] = [
     world: { w: W, h: W },
     maxHp: 4,
     weapons: true,
-    timeLimit: 90,
-    accent: [255, 213, 74],
+    timeLimit: null,
+    accent: [255, 200, 80],
+    phases: P_MELTDOWN,
     build(m) {
       m.ship.x = 500;
       m.ship.y = 860;
@@ -617,6 +1028,7 @@ const MISSION_DEFS: MissionDef[] = [
       ];
       m.pulseEvery = 4.2;
       m.pulseNext = 3;
+      m.stability = 100;
       m.rocks = [rockAt(m, 300, 120, 50, 20, 22), rockAt(m, 700, 760, -55, -35, 24)];
       m.portal = { x: 500, y: 460, r: 46, open: false };
       spawnDrone(m, 'turret', 90, 620);
@@ -629,7 +1041,7 @@ const MISSION_DEFS: MissionDef[] = [
     code: '06',
     name: 'Singularity',
     tagline: 'Destroy the Guardian at the edge of a black hole, then outrun it.',
-    briefing: 'The Guardian draws its power from a singularity that pulls everything towards it. It shields itself between attacks; when the shield drops, its core is exposed. Red lines mean a beam is coming. When it falls, the singularity will collapse: fly south to the escape portal before the event horizon reaches you.',
+    briefing: 'The Guardian draws its power from a singularity that pulls everything towards it. Its shield is fed by generators around the arena: destroy every generator to drop the shield, then pour fire into the core before they reboot. Red lines mean a beam is coming. When it falls, the singularity will collapse: fly south to the escape portal.',
     objective: 'Destroy the Guardian, then escape the singularity',
     secondaries: [
       { id: 'two-hits', text: 'Take at most 2 hits' },
@@ -639,13 +1051,15 @@ const MISSION_DEFS: MissionDef[] = [
     maxHp: 5,
     weapons: true,
     timeLimit: null,
-    accent: [255, 79, 216],
+    accent: [229, 72, 77],
+    phases: P_GUARDIAN,
     build(m) {
       m.ship.x = 500;
       m.ship.y = 840;
-      m.boss = { x: 500, y: 300, hp: 60, maxHp: 60, phase: 0, shielded: true, cycle: 0, attackIn: 2.2, beam: null, hitFlash: 0, dying: 0 };
+      m.boss = { x: 500, y: 300, hp: 60, maxHp: 60, phase: 0, shielded: true, cycle: 0, attackIn: 3.4, beam: null, hitFlash: 0, dying: 0 };
       m.gravity = { x: 500, y: 90, reach: 1100, pull: 60, horizon: 36 };
       m.portal = { x: 500, y: 935, r: 50, open: false };
+      raiseGenerators(m, 2);
     },
   },
   {
@@ -654,17 +1068,18 @@ const MISSION_DEFS: MissionDef[] = [
     code: '',
     name: 'Alien Pursuit',
     tagline: 'Escort a crippled transport through alien fighters.',
-    briefing: 'The transport Kestrel is limping north to the jump gate with forty colonists aboard and alien raiders in pursuit. Raiders dive straight at the transport; hunters come for you. Your blaster locks on automatically: stay close to the Kestrel and break up every attack run.',
-    objective: 'Escort the transport to the jump gate',
+    briefing: 'The transport Kestrel is limping north to the jump gate with forty colonists aboard and alien raiders in pursuit. Raiders dive straight at the transport; hunters come for you. A command raider is coordinating them: when it shows itself, hunt it down before it escapes.',
+    objective: 'Escort the Kestrel, intercept the command raider, reach the jump gate',
     secondaries: [
       { id: 'ally-half', text: 'The transport keeps over half its hull' },
-      { id: 'kills-12', text: 'Destroy 12 alien fighters' },
+      { id: 'commander', text: 'Destroy the command raider' },
     ],
     world: { w: W, h: 2400 },
     maxHp: 4,
     weapons: true,
     timeLimit: null,
-    accent: [91, 240, 138],
+    accent: [255, 170, 70],
+    phases: P_PURSUIT,
     build(m) {
       m.ship.x = 400;
       m.ship.y = 2260;
@@ -685,8 +1100,8 @@ const MISSION_DEFS: MissionDef[] = [
     code: '',
     name: 'The Rescue',
     tagline: 'Five escape pods, failing life support, a field of debris.',
-    briefing: 'A liner broke apart in the debris belt and five escape pods are drifting with failing life support. Fly to each pod to lock your tractor beam on (two at a time), then tow them back into the rescue ship’s bay. Your blaster can break up debris in your way.',
-    objective: 'Tow all 5 escape pods to the rescue ship before life support fails',
+    briefing: 'A liner broke apart in the debris belt and five escape pods, forty survivors, are drifting with failing life support. Sweep the belt to locate them, lock your tractor beam on (two at a time) and tow them into the rescue ship’s bay. If raiders threaten the rescue ship, the bay seals until they are gone. Your blaster can break up debris; it never targets the pods.',
+    objective: 'Locate and recover 40 survivors, secure the rescue area, dock',
     secondaries: [
       { id: 'fast', text: 'Finish in under 75s' },
       { id: 'no-damage', text: 'Take no hull damage' },
@@ -695,7 +1110,8 @@ const MISSION_DEFS: MissionDef[] = [
     maxHp: 3,
     weapons: true,
     timeLimit: 110,
-    accent: [79, 160, 255],
+    accent: [140, 200, 255],
+    phases: P_RESCUE,
     build(m) {
       m.ship.x = 500;
       m.ship.y = 1540;
@@ -706,7 +1122,7 @@ const MISSION_DEFS: MissionDef[] = [
         { x: 280, y: 680 },
         { x: 760, y: 430 },
         { x: 480, y: 170 },
-      ].map((p) => ({ id: m.nextId++, x: p.x, y: p.y, vx: 0, vy: 0, state: 'drifting' as const }));
+      ].map((p) => ({ id: m.nextId++, x: p.x, y: p.y, vx: 0, vy: 0, state: 'drifting' as const, found: false }));
       const rocks: [number, number, number, number, number][] = [
         [380, 1300, 40, -20, 26], [650, 1220, -35, 25, 30], [520, 900, 45, 15, 24], [200, 880, -30, -30, 28],
         [820, 760, -40, 20, 26], [420, 520, 30, 35, 30], [640, 300, -45, -15, 24], [250, 320, 35, 25, 26],
@@ -723,7 +1139,7 @@ const MISSION_DEFS: MissionDef[] = [
     name: 'The Convoy',
     tagline: 'Three cargo haulers. One escort. Escalating raids.',
     briefing: 'Three haulers carry the colony’s medical stores to the relay station. Alien raids will come from every side, and they will get heavier the further north you go. Keep at least two haulers alive; the mission fails if two are lost.',
-    objective: 'Get at least 2 of the 3 cargo ships to the relay',
+    objective: 'Escort the convoy, break the ambush, deliver at least 2 haulers',
     secondaries: [
       { id: 'all-allies', text: 'All three cargo ships survive' },
       { id: 'kills-15', text: 'Destroy 15 raiders' },
@@ -732,15 +1148,16 @@ const MISSION_DEFS: MissionDef[] = [
     maxHp: 4,
     weapons: true,
     timeLimit: null,
-    accent: [255, 181, 71],
+    accent: [225, 190, 130],
+    phases: P_CONVOY,
     build(m) {
       m.ship.x = 500;
       m.ship.y = 2300;
       const lane = (x: number) => [{ x, y: 1800 }, { x: x + 60, y: 1300 }, { x: x - 40, y: 800 }, { x, y: 300 }];
       m.allies = [
-        ally(m, 'cargo', 'Hauler One', 380, 2420, 9, 30, lane(380), 52),
-        ally(m, 'cargo', 'Hauler Two', 500, 2480, 9, 30, lane(500), 52),
-        ally(m, 'cargo', 'Hauler Three', 620, 2420, 9, 30, lane(620), 52),
+        ally(m, 'cargo', 'Hauler One', 380, 2420, 11, 30, lane(380), 52),
+        ally(m, 'cargo', 'Hauler Two', 500, 2480, 11, 30, lane(500), 52),
+        ally(m, 'cargo', 'Hauler Three', 620, 2420, 11, 30, lane(620), 52),
       ];
       m.alliesNeeded = 2;
       m.spawner = { every: 2, next: 3, kinds: ['raider', 'raider', 'gunner', 'scout', 'raider'], maxAlive: 7, edge: 'around' };
@@ -753,7 +1170,7 @@ const MISSION_DEFS: MissionDef[] = [
     code: '',
     name: 'The Last Jump',
     tagline: 'Hold off a fleet while the capital ship charges its jump drive.',
-    briefing: 'The capital ship Meridian is the last ship out, and its jump drive needs seventy seconds to charge. The enemy fleet knows it. Waves will grow heavier as the drive charges. Protect the Meridian until it jumps, and it will take you with it.',
+    briefing: 'The capital ship Meridian is the last ship out, and its jump drive needs seventy seconds of charge. Raiders that slam into her hull knock the drive charge back, and a bomber wing will come for the drive core. Protect the Meridian until it jumps, and it will take you with it.',
     objective: 'Protect the capital ship until its jump drive charges',
     secondaries: [
       { id: 'ally-half', text: 'The capital ship keeps over half its hull' },
@@ -763,11 +1180,12 @@ const MISSION_DEFS: MissionDef[] = [
     maxHp: 5,
     weapons: true,
     timeLimit: null,
-    accent: [155, 123, 255],
+    accent: [76, 157, 255],
+    phases: P_LAST_JUMP,
     build(m) {
       m.ship.x = 500;
       m.ship.y = 830;
-      m.allies = [ally(m, 'capital', 'Capital ship Meridian', 500, 560, 70, 70, [], 0)];
+      m.allies = [ally(m, 'capital', 'Capital ship Meridian', 500, 560, 90, 70, [], 0)];
       m.alliesNeeded = 1;
       m.jump = { charge: 0, duration: 70 };
       m.spawner = { every: 3, next: 2, kinds: ['raider', 'gunner', 'raider', 'scout'], maxAlive: 7, edge: 'around' };
@@ -779,6 +1197,23 @@ const MISSION_DEFS: MissionDef[] = [
 const ORDER: MissionId[] = ['first-contact', 'alien-pursuit', 'rescue', 'shattered-orbit', 'collapse', 'meltdown', 'breach-protocol', 'convoy', 'last-jump', 'guardian'];
 
 export const MISSIONS: readonly MissionDef[] = ORDER.map((id, index) => ({ ...MISSION_DEFS.find((d) => d.id === id)!, index, code: String(index + 1).padStart(2, '0') }));
+
+export type Threat = 'LOW' | 'GUARDED' | 'ELEVATED' | 'HIGH' | 'SEVERE' | 'CRITICAL';
+export const THREATS: Threat[] = ['LOW', 'GUARDED', 'ELEVATED', 'HIGH', 'SEVERE', 'CRITICAL'];
+
+/** Each mission is a different military operation: a codename, its type and a threat classification. */
+export const OPERATIONS: Record<MissionId, { op: string; kind: string; threat: Threat }> = {
+  'first-contact': { op: 'Op. Starfall', kind: 'Asteroid interception', threat: 'LOW' },
+  'alien-pursuit': { op: 'Op. Shepherd', kind: 'Transport defence', threat: 'GUARDED' },
+  rescue: { op: 'Op. Lifeline', kind: 'Search and rescue', threat: 'GUARDED' },
+  'shattered-orbit': { op: 'Op. Needle', kind: 'Wreck navigation', threat: 'ELEVATED' },
+  collapse: { op: 'Op. Falling Sky', kind: 'Orbital evacuation', threat: 'ELEVATED' },
+  meltdown: { op: 'Op. Cold Core', kind: 'Reactor emergency', threat: 'HIGH' },
+  'breach-protocol': { op: 'Op. Bulwark', kind: 'Swarm defence', threat: 'HIGH' },
+  convoy: { op: 'Op. Iron Caravan', kind: 'Convoy protection', threat: 'SEVERE' },
+  'last-jump': { op: 'Op. Last Light', kind: 'Capital-ship defence', threat: 'SEVERE' },
+  guardian: { op: 'Op. Event Horizon', kind: 'Singularity strike', threat: 'CRITICAL' },
+};
 
 export const missionById = (id: MissionId) => MISSIONS.find((m) => m.id === id) ?? MISSIONS[0];
 
@@ -833,10 +1268,17 @@ export function createMission(def: MissionDef, seed = 1): MissionState {
     hitsTaken: 0,
     score: 0,
     target: null,
+    phase: 0,
+    phaseTime: 0,
+    phasesDone: [],
+    switches: [],
+    stability: null,
+    flags: {},
     events: [],
     nextId: 1,
   };
   def.build(m, m.rng);
+  def.phases[0]?.enter?.(m);
   m.camX = clampCamX(m, m.ship.x - VIEW / 2);
   m.camY = clampCam(m, m.ship.y - VIEW * 0.6);
   return m;
@@ -856,60 +1298,38 @@ export interface ObjectiveView {
   text: string;
   progress: number; // 0..1
   count: string | null; // "3/5"
+  phase: number; // 1-based
+  phases: number;
+  title: string; // current phase title
+  /** A countdown or critical resource for this mission, if any. */
+  timer: { label: string; value: string; urgent: boolean } | null;
 }
 
-/** What the HUD shows as the current objective. */
-/** How far along its route a friendly ship is (0..1). */
-function allyProgress(a: Ally): number {
-  if (!a.path.length) return 1;
-  if (a.arrived) return 1;
-  return Math.min(0.99, a.pathIdx / a.path.length);
-}
-
+/** What the HUD shows: the current phase of the operation, its progress, and any countdown. */
 export function objectiveView(m: MissionState): ObjectiveView {
-  const portalOpen = m.portal?.open ?? false;
-  switch (m.def.id) {
-    case 'first-contact': {
-      const got = m.cores.filter((c) => c.taken).length;
-      return portalOpen ? { text: 'Reach the extraction portal', progress: 1, count: null } : { text: 'Collect fuel cores', progress: got / m.coresNeeded, count: `${got}/${m.coresNeeded}` };
-    }
-    case 'alien-pursuit':
-    case 'convoy': {
-      const living = m.allies.filter((a) => !a.destroyed);
-      const prog = living.length ? Math.min(...living.map(allyProgress)) : 0;
-      const label = m.def.id === 'convoy' ? `Escort the convoy · ${living.length}/${m.allies.length} ships` : 'Escort the transport to the jump gate';
-      return { text: label, progress: prog, count: `${Math.round(prog * 100)}%` };
-    }
-    case 'rescue': {
-      const saved = m.pods.filter((p) => p.state === 'saved').length;
-      const towing = m.pods.filter((p) => p.state === 'towed').length;
-      return { text: towing ? `Tow ${towing === 1 ? 'the pod' : 'the pods'} to the rescue ship` : 'Find the escape pods', progress: saved / m.pods.length, count: `${saved}/${m.pods.length}` };
-    }
-    case 'last-jump': {
-      const j = m.jump!;
-      return { text: 'Protect the Meridian · jump drive charging', progress: j.charge / j.duration, count: `${Math.floor((j.charge / j.duration) * 100)}%` };
-    }
-    case 'shattered-orbit': {
-      const n = m.gates.filter((g) => g.passed).length;
-      return portalOpen ? { text: 'Reach the exit portal', progress: 1, count: null } : { text: 'Fly through the navigation gates', progress: n / m.gates.length, count: `${n}/${m.gates.length}` };
-    }
-    case 'breach-protocol':
-      return { text: 'Clear the swarm · protect the Aegis', progress: m.cleared / m.killsNeeded, count: `${m.cleared}/${m.killsNeeded}` };
-    case 'collapse': {
-      const total = m.def.world.h - 300;
-      const done = Math.max(0, Math.min(1, (m.def.world.h - 160 - m.ship.y) / total));
-      return { text: 'Escape north to the portal', progress: done, count: `${Math.round(done * 100)}%` };
-    }
-    case 'meltdown': {
-      const n = m.reactors.filter((r) => r.active).length;
-      return portalOpen ? { text: 'Escape through the portal', progress: 1, count: null } : { text: 'Stabilise the reactors', progress: n / m.reactors.length, count: `${n}/${m.reactors.length}` };
-    }
-    case 'guardian': {
-      const b = m.boss!;
-      if (m.escaping) return { text: 'ESCAPE! Fly south to the portal', progress: 1, count: null };
-      return { text: b.shielded ? 'Survive until the shield drops' : 'Shield down: fire at the core!', progress: 1 - b.hp / b.maxHp, count: `${Math.max(0, b.hp)}/${b.maxHp}` };
-    }
+  const phases = m.def.phases;
+  const i = Math.min(m.phase, phases.length - 1);
+  const v = phases[i].view(m);
+  return { ...v, phase: i + 1, phases: phases.length, title: phases[i].title, timer: missionTimer(m) };
+}
+
+function missionTimer(m: MissionState): ObjectiveView['timer'] {
+  if (m.stability !== null) return { label: 'Core stability', value: `${Math.max(0, Math.ceil(m.stability))}%`, urgent: m.stability < 30 };
+  if (m.collapseY !== null) {
+    const gap = Math.max(0, Math.round(m.collapseY - m.ship.y));
+    return { label: 'Collapse behind', value: `${gap}m`, urgent: gap < 260 };
   }
+  const cmd = m.drones.find((d) => d.tag === 'commander' && d.hp > 0);
+  if (cmd && m.flags.cmdEscapeAt !== undefined) {
+    const left = Math.max(0, m.flags.cmdEscapeAt - m.time);
+    return { label: left > 0 ? 'Escapes in' : 'Escaping', value: `${Math.ceil(left)}s`, urgent: left < 10 };
+  }
+  if (m.def.timeLimit !== null && m.def.id === 'rescue') {
+    const left = Math.max(0, m.def.timeLimit - m.time);
+    return { label: 'Life support', value: `${Math.ceil(left)}s`, urgent: left < 20 };
+  }
+  if (m.jump) return { label: 'Jump drive', value: `${Math.floor((m.jump.charge / m.jump.duration) * 100)}%`, urgent: false };
+  return null;
 }
 
 /** Which optional objectives were achieved (evaluated at the end of a won mission). */
@@ -930,6 +1350,8 @@ export function secondariesMet(m: MissionState): boolean[] {
         return m.allies.every((a) => !a.destroyed);
       case 'kills-12':
         return m.kills >= 12;
+      case 'commander':
+        return m.flags.cmdKilled === 1;
       case 'kills-15':
         return m.kills >= 15;
       case 'turrets':
@@ -952,6 +1374,14 @@ export const starsFor = (m: MissionState) => (m.status === 'won' ? 1 + secondari
 export interface MissionInput {
   x: number;
   y: number;
+  /** Primary fire held (Space, mouse button or the touch FIRE button). */
+  fire?: boolean;
+  /**
+   * Optional aim assist (a player setting): a shot whose heading is within ASSIST_CONE of a target is
+   * straightened onto it. Shots still only fire on input and only from the nose; with it off they fly
+   * exactly along the heading.
+   */
+  assist?: boolean;
 }
 
 function win(m: MissionState): void {
@@ -1001,15 +1431,17 @@ function openPortal(m: MissionState): void {
   }
 }
 
-const DRONE_HP: Record<DroneKind, number> = { scout: 5, gunner: 9, raider: 4, turret: 14 };
-const DRONE_SCORE: Record<DroneKind, number> = { scout: 120, gunner: 180, raider: 140, turret: 250 };
+const DRONE_HP: Record<DroneKind, number> = { scout: 4, gunner: 7, raider: 3, turret: 12, generator: 8, hive: 36, commander: 16 };
+const DRONE_SCORE: Record<DroneKind, number> = { scout: 120, gunner: 180, raider: 140, turret: 250, generator: 200, hive: 1200, commander: 900 };
 
-function spawnDrone(m: MissionState, kind: DroneKind, x: number, y: number): void {
+function spawnDrone(m: MissionState, kind: DroneKind, x: number, y: number): Drone {
   const living = m.allies.filter((a) => !a.destroyed);
   // Raiders always hunt a friendly ship; gunners do half the time when there is one to protect.
   const hunts = living.length > 0 && (kind === 'raider' || (kind === 'gunner' && m.rng() < 0.5));
   const targetAlly = hunts ? living[Math.floor(m.rng() * living.length)].id : null;
-  m.drones.push({ id: m.nextId++, kind, x, y, vx: 0, vy: 0, hp: DRONE_HP[kind], maxHp: DRONE_HP[kind], fireIn: 1.2 + m.rng() * 1.0, aim: 0, hitFlash: 0, spawnIn: 0.8, targetAlly });
+  const d: Drone = { id: m.nextId++, kind, x, y, vx: 0, vy: 0, hp: DRONE_HP[kind], maxHp: DRONE_HP[kind], fireIn: 1.2 + m.rng() * 1.0, aim: 0, hitFlash: 0, spawnIn: 0.8, targetAlly };
+  m.drones.push(d);
+  return d;
 }
 
 const TIMEOUT_REASON: Partial<Record<MissionId, string>> = {
@@ -1040,7 +1472,7 @@ export function stepMission(m: MissionState, input: MissionInput, dt: number): v
   updateWorld(m, wdt);
   updateAllies(m, wdt);
   updateSpawner(m, wdt);
-  updateCombat(m, dt, wdt);
+  updateCombat(m, dt, wdt, !!input.fire, !!input.assist);
   updatePods(m, dt);
   updateObjectives(m, dt, wdt);
   updateChrono(m, dt);
@@ -1094,30 +1526,34 @@ function updateCamera(m: MissionState, dt: number): void {
 
 /** Where the current objective is, for the off-screen pointer. */
 export function objectiveTarget(m: MissionState): Vec | null {
-  if (m.portal?.open) return m.portal;
   const near = <T extends Vec>(xs: T[]) => xs.sort((a, b) => dist(a, m.ship) - dist(b, m.ship))[0] ?? null;
+  const phase = m.def.phases[Math.min(m.phase, m.def.phases.length - 1)].id;
+  if (phase === 'extract' && m.portal?.open) return m.portal;
   switch (m.def.id) {
     case 'first-contact':
-      return near(m.cores.filter((c) => !c.taken));
+      return phase === 'cores' ? near(m.cores.filter((c) => !c.taken)) : near(m.rocks.filter((r) => r.tag === 'blocker'));
     case 'shattered-orbit':
       return m.gates.find((g) => !g.passed) ?? null;
     case 'meltdown':
       return near(m.reactors.filter((r) => !r.active));
     case 'breach-protocol':
-      return near(m.drones.filter((d) => d.spawnIn === 0));
+      return phase === 'hive' ? tagged(m, 'hive')[0] ?? null : near(m.drones.filter((d) => d.spawnIn === 0));
     case 'collapse':
-      return m.portal;
+      return m.switches.find((w) => !w.active) ?? m.portal;
     case 'guardian':
-      return m.escaping ? m.portal : m.boss;
+      if (m.escaping) return m.portal;
+      return m.boss?.shielded ? near(tagged(m, 'generator')) ?? m.boss : m.boss;
     case 'alien-pursuit':
     case 'convoy':
     case 'last-jump': {
-      // Point at the friendly ship in most danger.
-      const living = m.allies.filter((a) => !a.destroyed);
-      return living.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0] ?? null;
+      const priority = near(m.drones.filter((d) => d.tag && d.hp > 0 && d.spawnIn === 0));
+      if (priority) return priority;
+      // Otherwise point at the friendly ship in most danger.
+      return living(m).sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0] ?? null;
     }
     case 'rescue': {
-      if (m.pods.some((p) => p.state === 'towed')) return m.rescueZone;
+      if (phase === 'secure') return near(tagged(m, 'boarders'));
+      if (phase === 'dock' || m.pods.some((p) => p.state === 'towed')) return m.rescueZone;
       return near(m.pods.filter((p) => p.state === 'drifting'));
     }
   }
@@ -1194,6 +1630,10 @@ function allyDamage(m: MissionState, a: Ally, amount: number): void {
   a.hp -= amount;
   a.hitFlash = 0.15;
   m.events.push({ type: 'ally-hit', x: a.x, y: a.y });
+  if (a.hp > 0 && a.hp / a.maxHp < 0.35 && !m.flags[`crit${a.id}`]) {
+    m.flags[`crit${a.id}`] = 1;
+    comms(m, `${a.name} is taking critical damage!`, true);
+  }
   if (a.hp <= 0) {
     a.hp = 0;
     a.destroyed = true;
@@ -1217,10 +1657,128 @@ function registerKill(m: MissionState, d: Drone): void {
   if (d.kind === 'turret') m.turretsKilled++;
 }
 
-function updateCombat(m: MissionState, dt: number, wdt: number): void {
+/** Where along the segment p0→p1 (0..1) it first comes within `r` of point c, or null if it never does. */
+export function segmentHit(x0: number, y0: number, x1: number, y1: number, cx: number, cy: number, r: number): number | null {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const fx = x0 - cx;
+  const fy = y0 - cy;
+  const a = dx * dx + dy * dy;
+  const c = fx * fx + fy * fy - r * r;
+  if (c <= 0) return 0; // already touching at the start
+  if (a === 0) return null;
+  const b = 2 * (fx * dx + fy * dy);
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;
+  const k = (-b - Math.sqrt(disc)) / (2 * a);
+  return k >= 0 && k <= 1 ? k : null;
+}
+
+/** Segment against an axis-aligned rectangle: the first point of entry (0..1), or null. */
+function segmentRect(x0: number, y0: number, x1: number, y1: number, w: Rect): number | null {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  for (const [p, q] of [
+    [-dx, x0 - w.x],
+    [dx, w.x + w.w - x0],
+    [-dy, y0 - w.y],
+    [dy, w.y + w.h - y0],
+  ]) {
+    if (p === 0) {
+      if (q < 0) return null;
+    } else {
+      const k = q / p;
+      if (p < 0) t0 = Math.max(t0, k);
+      else t1 = Math.min(t1, k);
+      if (t0 > t1) return null;
+    }
+  }
+  return t0;
+}
+
+interface BoltHit {
+  kind: 'drone' | 'boss' | 'rock' | 'wall';
+  k: number;
+  x: number;
+  y: number;
+  drone?: Drone;
+  rock?: Rock;
+}
+
+/** The first thing a player bolt moving from (x0,y0) to (x1,y1) would strike. Walls stop bolts. */
+function firstHit(m: MissionState, x0: number, y0: number, x1: number, y1: number, br: number): BoltHit | null {
+  let best: BoltHit | null = null;
+  const consider = (h: BoltHit) => {
+    if (!best || h.k < best.k) best = h;
+  };
+  for (const w0 of m.walls) {
+    const k = segmentRect(x0, y0, x1, y1, wallAt(w0, m.time));
+    if (k !== null) consider({ kind: 'wall', k, x: x0 + (x1 - x0) * k, y: y0 + (y1 - y0) * k });
+  }
+  for (const d of m.drones) {
+    if (d.spawnIn > 0 || d.hp <= 0) continue;
+    const k = segmentHit(x0, y0, x1, y1, d.x, d.y, HIT_R[d.kind] + br);
+    if (k !== null) consider({ kind: 'drone', k, x: x0 + (x1 - x0) * k, y: y0 + (y1 - y0) * k, drone: d });
+  }
+  const boss = m.boss;
+  if (boss && boss.dying === 0 && boss.hp > 0) {
+    // While shielded the bolt stops on the shield bubble; otherwise on the hull.
+    const k = segmentHit(x0, y0, x1, y1, boss.x, boss.y, (boss.shielded ? 96 : 66) + br);
+    if (k !== null) consider({ kind: 'boss', k, x: x0 + (x1 - x0) * k, y: y0 + (y1 - y0) * k });
+  }
+  for (const r of m.rocks) {
+    const k = segmentHit(x0, y0, x1, y1, r.x, r.y, r.r + br);
+    if (k !== null) consider({ kind: 'rock', k, x: x0 + (x1 - x0) * k, y: y0 + (y1 - y0) * k, rock: r });
+  }
+  return best;
+}
+
+/**
+ * Where a shot fired now would go, and what it would hit: straight along the heading, or (with aim
+ * assist) straightened onto the best target within ASSIST_CONE of the nose with a clear line of fire.
+ */
+function aimSolution(m: MissionState, assist: boolean): { angle: number; target: number | null } {
+  const s = m.ship;
+  const straight = { angle: s.angle, target: lineOfFire(m, s.angle) };
+  if (!assist) return straight;
+  const mx = s.x + Math.cos(s.angle) * MUZZLE;
+  const my = s.y + Math.sin(s.angle) * MUZZLE;
+  const cands: { x: number; y: number; id: number }[] = [];
+  for (const d of m.drones) if (d.spawnIn === 0 && d.hp > 0) cands.push({ x: d.x, y: d.y, id: d.id });
+  if (m.boss && m.boss.dying === 0 && m.boss.hp > 0 && !m.boss.shielded) cands.push({ x: m.boss.x, y: m.boss.y, id: -1 });
+  for (const r of m.rocks) if (r.hp !== undefined) cands.push({ x: r.x, y: r.y, id: -2 - r.id });
+  let best: { angle: number; target: number; off: number } | null = null;
+  for (const c of cands) {
+    const dd = Math.hypot(c.x - mx, c.y - my);
+    if (dd > FIRE_RANGE) continue;
+    const a = Math.atan2(c.y - my, c.x - mx);
+    let off = Math.abs(a - s.angle);
+    off = Math.min(off, Math.PI * 2 - off);
+    if (off > ASSIST_CONE) continue;
+    // Only if the straightened shot really reaches this target first (no wall or other body in the way).
+    if (lineOfFire(m, a) !== c.id) continue;
+    if (!best || off < best.off) best = { angle: a, target: c.id, off };
+  }
+  return best ?? straight;
+}
+
+/** What a bolt fired now along `angle` would hit (within range): the HUD's "in your sights" target. */
+function lineOfFire(m: MissionState, angle: number): number | null {
+  const s = m.ship;
+  const mx = s.x + Math.cos(s.angle) * MUZZLE;
+  const my = s.y + Math.sin(s.angle) * MUZZLE;
+  const h = firstHit(m, mx, my, mx + Math.cos(angle) * FIRE_RANGE, my + Math.sin(angle) * FIRE_RANGE, BOLT_R);
+  if (!h || h.kind === 'wall') return null;
+  if (h.kind === 'rock' && h.rock!.hp === undefined) return null; // an indestructible asteroid is in the way
+  return h.kind === 'drone' ? h.drone!.id : h.kind === 'boss' ? -1 : -2 - h.rock!.id;
+}
+
+function updateCombat(m: MissionState, dt: number, wdt: number, fire: boolean, assist: boolean): void {
   const s = m.ship;
   // Enemy waves arrive when the previous wave is cleared (turrets do not hold up the next wave).
-  if (m.waves.length && m.drones.every((d) => d.kind === 'turret')) {
+  if (m.waves.length && m.drones.every((d) => STATIONARY.includes(d.kind))) {
     const wave = m.waves.shift()!;
     for (const sp of wave.spawn) spawnDrone(m, sp.kind, sp.x, sp.y);
   }
@@ -1251,6 +1809,42 @@ function updateCombat(m: MissionState, dt: number, wdt: number): void {
       // Raiders make attack runs straight at their target.
       d.vx += ((dx / dd) * 175 - d.vx) * Math.min(1, wdt * 1.8);
       d.vy += ((dy / dd) * 175 - d.vy) * Math.min(1, wdt * 1.8);
+    } else if (d.kind === 'commander') {
+      // The command raider shadows the transport from a distance, then makes a run for the map edge.
+      const escaping = m.flags.cmdEscapeAt !== undefined && m.time >= m.flags.cmdEscapeAt;
+      if (escaping && !m.flags.cmdEscapeWarned) {
+        m.flags.cmdEscapeWarned = 1;
+        comms(m, 'The command raider is breaking away! Stop it!', true);
+      }
+      let tx: number;
+      let ty: number;
+      if (escaping) {
+        tx = d.x < m.def.world.w / 2 ? -200 : m.def.world.w + 200;
+        ty = d.y - 120;
+      } else {
+        const side = Math.sin(m.time * 0.35) > 0 ? 1 : -1;
+        tx = prey.x + side * 240;
+        ty = prey.y - 160;
+      }
+      const ex = tx - d.x;
+      const ey = ty - d.y;
+      const ed = Math.hypot(ex, ey) || 1;
+      const sp = escaping ? 230 : 150;
+      d.vx += ((ex / ed) * sp - d.vx) * Math.min(1, wdt * 1.6);
+      d.vy += ((ey / ed) * sp - d.vy) * Math.min(1, wdt * 1.6);
+      if (escaping && (d.x < 30 || d.x > m.def.world.w - 30)) {
+        d.hp = 0;
+        d.gone = true;
+        m.flags.cmdEscaped = 1;
+      }
+    } else if (d.kind === 'hive') {
+      // The hive carrier launches raiders at the frigate while it lives (a few at a time).
+      m.flags.hiveNext = (m.flags.hiveNext ?? 2.5) - wdt;
+      if (m.flags.hiveNext <= 0 && m.drones.filter((x) => x.tag === 'brood' && x.hp > 0).length < 4) {
+        m.flags.hiveNext = 3.2;
+        const r = spawnDrone(m, 'raider', d.x + (m.rng() - 0.5) * 80, d.y + 50);
+        r.tag = 'brood';
+      }
     } else if (d.kind === 'gunner') {
       // Gunners keep their distance from their target and strafe.
       const want = dd < 300 ? -1 : dd > 420 ? 1 : 0;
@@ -1258,16 +1852,16 @@ function updateCombat(m: MissionState, dt: number, wdt: number): void {
       d.vx += ((dx / dd) * sp * want + (-dy / dd) * 70 - d.vx) * Math.min(1, wdt * 1.6);
       d.vy += ((dy / dd) * sp * want + (dx / dd) * 70 - d.vy) * Math.min(1, wdt * 1.6);
     }
-    if (d.kind === 'gunner' || d.kind === 'turret') {
+    if (d.kind === 'gunner' || d.kind === 'turret' || d.kind === 'commander') {
       d.fireIn -= wdt;
-      if (d.fireIn <= 0 && d.aim <= 0 && (d.kind === 'gunner' || dist(d, s) < 650)) {
+      if (d.fireIn <= 0 && d.aim <= 0 && (d.kind !== 'turret' || dist(d, s) < 650)) {
         d.aim = AIM_TIME;
         m.events.push({ type: 'warn', x: d.x, y: d.y });
       }
       if (d.aim > 0) {
         d.aim -= wdt;
         if (d.aim <= 0) {
-          d.fireIn = (d.kind === 'turret' ? 2.4 : 1.6) + m.rng() * 1.0;
+          d.fireIn = (d.kind === 'turret' ? 2.4 : d.kind === 'commander' ? 2.2 : 1.6) + m.rng() * 1.0;
           const tgt = d.kind === 'turret' ? s : prey;
           const a = Math.atan2(tgt.y - d.y, tgt.x - d.x);
           m.bullets.push({ id: m.nextId++, x: d.x, y: d.y, vx: Math.cos(a) * ENEMY_BOLT_SPEED, vy: Math.sin(a) * ENEMY_BOLT_SPEED, r: 9, from: 'enemy', life: 5 });
@@ -1275,15 +1869,22 @@ function updateCombat(m: MissionState, dt: number, wdt: number): void {
         }
       }
     }
-    if (d.kind !== 'turret') {
+    if (!STATIONARY.includes(d.kind)) {
       d.x += d.vx * wdt;
       d.y += d.vy * wdt;
-      resolve(m, d, 18);
+      // The escaping command raider may leave the world; everything else stays inside it.
+      if (!(d.kind === 'commander' && m.flags.cmdEscapeAt !== undefined && m.time >= m.flags.cmdEscapeAt)) resolve(m, d, 18);
     }
     // A raider that reaches a friendly ship slams into it.
     const victim = allyById(m, d.targetAlly);
     if (d.kind === 'raider' && victim && dist(d, victim) < victim.r + 14) {
       allyDamage(m, victim, 2);
+      if (m.jump && victim.kind === 'capital') {
+        // Impacts disrupt the jump drive and knock its charge back.
+        m.jump.charge = Math.max(0, m.jump.charge - 1.5);
+        if (m.time - (m.flags.disruptAt ?? -99) > 4) comms(m, 'Impact on the Meridian: jump drive charge disrupted!', true);
+        m.flags.disruptAt = m.time;
+      }
       d.hp = -999; // destroyed in the impact; not counted as a kill
     }
   }
@@ -1291,47 +1892,35 @@ function updateCombat(m: MissionState, dt: number, wdt: number): void {
   // Boss
   if (m.boss) updateBoss(m, wdt);
 
-  // Player blaster: automatic, locked on the nearest target in range. Overdrive doubles the fire rate.
-  if (m.def.weapons) {
-    s.fireCd = Math.max(0, s.fireCd - dt);
-    let best: { id: number; x: number; y: number; d: number } | null = null;
-    for (const d of m.drones) {
-      if (d.spawnIn > 0) continue;
-      const dd = dist(s, d);
-      if (dd < FIRE_RANGE && (!best || dd < best.d)) best = { id: d.id, x: d.x, y: d.y, d: dd };
-    }
-    if (m.boss && !m.boss.shielded && m.boss.dying === 0 && m.boss.hp > 0) {
-      const dd = dist(s, m.boss);
-      if (dd < FIRE_RANGE + 80 && (!best || dd < best.d)) best = { id: -1, x: m.boss.x, y: m.boss.y, d: dd };
-    }
-    if (!best) {
-      // With no enemies in range, the blaster breaks up destructible debris (The Rescue).
-      for (const r of m.rocks) {
-        if (r.hp === undefined) continue;
-        const dd = dist(s, r);
-        if (dd < FIRE_RANGE * 0.75 && (!best || dd < best.d)) best = { id: -2 - r.id, x: r.x, y: r.y, d: dd };
-      }
-    }
-    m.target = best ? best.id : null;
-    if (best && s.fireCd === 0) {
-      s.fireCd = m.power.overdrive > 0 ? FIRE_EVERY / 2 : FIRE_EVERY;
-      const a = Math.atan2(best.y - s.y, best.x - s.x);
-      m.bullets.push({ id: m.nextId++, x: s.x + Math.cos(a) * 18, y: s.y + Math.sin(a) * 18, vx: Math.cos(a) * BOLT_SPEED, vy: Math.sin(a) * BOLT_SPEED, r: 5, from: 'player', life: 0.7 });
-      m.events.push({ type: 'shoot', x: s.x, y: s.y });
-    }
+  // Player blaster: fires only when the player asks, straight ahead along the ship's heading, from
+  // the muzzle at the nose. Overdrive halves the cooldown. Nothing is auto-aimed.
+  s.fireCd = Math.max(0, s.fireCd - dt);
+  const aim = m.def.weapons ? aimSolution(m, assist) : null;
+  m.target = aim ? aim.target : null;
+  if (m.def.weapons && fire && s.fireCd === 0 && aim) {
+    s.fireCd = m.power.overdrive > 0 ? FIRE_EVERY / 2 : FIRE_EVERY;
+    const mx = s.x + Math.cos(s.angle) * MUZZLE;
+    const my = s.y + Math.sin(s.angle) * MUZZLE;
+    const ux = Math.cos(aim.angle);
+    const uy = Math.sin(aim.angle);
+    m.bullets.push({ id: m.nextId++, x: mx, y: my, vx: ux * BOLT_SPEED, vy: uy * BOLT_SPEED, r: BOLT_R, from: 'player', life: FIRE_RANGE / BOLT_SPEED });
+    m.events.push({ type: 'shoot', x: mx, y: my, angle: aim.angle });
+    m.flags.shots = (m.flags.shots ?? 0) + 1;
   }
 
   // Bullets: player bolts in real time, enemy shots in world time.
   for (const b of m.bullets) {
     const t = b.from === 'player' ? dt : wdt;
-    b.x += b.vx * t;
-    b.y += b.vy * t;
+    const x0 = b.x;
+    const y0 = b.y;
+    // A bolt never travels further than its remaining life allows.
+    const tt = Math.min(t, Math.max(0, b.life));
+    b.x += b.vx * tt;
+    b.y += b.vy * tt;
     b.life -= t;
-    if (insideWall(m, b.x, b.y, 0)) b.life = 0;
-  }
-  for (const b of m.bullets) {
-    if (b.life <= 0) continue;
     if (b.from === 'enemy') {
+      if (insideWall(m, b.x, b.y, 0)) b.life = 0;
+      if (b.life <= 0) continue;
       for (const a of m.allies) {
         if (!a.destroyed && dist(b, a) < a.r + b.r) {
           b.life = 0;
@@ -1341,45 +1930,50 @@ function updateCombat(m: MissionState, dt: number, wdt: number): void {
       }
       continue;
     }
-    for (const d of m.drones) {
-      if (d.spawnIn > 0 || d.hp <= 0 || dist(b, d) > 20 + b.r) continue;
-      b.life = 0;
+    // Player bolts: swept along the path travelled this step, so the result does not depend on the
+    // frame rate. The first thing on the path (wall, enemy, boss or debris) takes the hit.
+    const hit = firstHit(m, x0, y0, b.x, b.y, b.r);
+    if (!hit) continue;
+    b.life = 0;
+    b.x = hit.x;
+    b.y = hit.y;
+    // Accuracy: bolts that struck a target (not walls or solid asteroids).
+    if (hit.kind === 'drone' || hit.kind === 'boss' || (hit.kind === 'rock' && hit.rock!.hp !== undefined)) m.flags.shotsHit = (m.flags.shotsHit ?? 0) + 1;
+    if (hit.kind === 'drone') {
+      const d = hit.drone!;
       d.hp -= 1;
       d.hitFlash = 0.12;
-      m.events.push({ type: 'enemy-hit', x: d.x, y: d.y });
-      break;
-    }
-    if (b.life > 0 && m.boss && m.boss.dying === 0 && m.boss.hp > 0 && dist(b, m.boss) < 70) {
-      b.life = 0;
-      if (!m.boss.shielded) {
-        m.boss.hp -= 1;
-        m.boss.hitFlash = 0.1;
+      m.events.push({ type: 'enemy-hit', x: hit.x, y: hit.y });
+    } else if (hit.kind === 'boss') {
+      const boss = m.boss!;
+      if (!boss.shielded) {
+        boss.hp -= 1;
+        boss.hitFlash = 0.1;
         m.score += 20;
-        m.events.push({ type: 'enemy-hit', x: b.x, y: b.y });
-      }
-    }
-    if (b.life > 0) {
-      for (const r of m.rocks) {
-        if (r.hp === undefined || dist(b, r) > r.r + b.r) continue;
-        b.life = 0;
-        r.hp -= 1;
-        m.events.push({ type: 'enemy-hit', x: b.x, y: b.y });
-        if (r.hp <= 0) {
-          m.score += 60;
-          m.events.push({ type: 'explode', x: r.x, y: r.y, big: false });
-        }
-        break;
+        m.events.push({ type: 'enemy-hit', x: hit.x, y: hit.y });
+      } else m.events.push({ type: 'deflect', x: hit.x, y: hit.y }); // the Guardian's shield stops it
+    } else if (hit.kind === 'rock') {
+      const r = hit.rock!;
+      m.events.push({ type: 'enemy-hit', x: hit.x, y: hit.y });
+      if (r.hp === undefined) continue; // solid asteroid: the bolt breaks on it
+      r.hp -= 1;
+      if (r.hp <= 0) {
+        m.score += 60;
+        m.events.push({ type: 'explode', x: r.x, y: r.y, big: false });
       }
     }
   }
   m.rocks = m.rocks.filter((r) => r.hp === undefined || r.hp > 0);
   for (const d of m.drones) {
-    if (d.hp <= 0) m.cleared++;
+    if (d.hp > 0) continue;
+    if (d.gone) continue; // escaped: no explosion, no kill
+    m.cleared++;
     if (d.hp <= -999) m.events.push({ type: 'explode', x: d.x, y: d.y, big: false });
-    else if (d.hp <= 0) {
-      m.events.push({ type: 'explode', x: d.x, y: d.y, big: false });
+    else {
+      m.events.push({ type: 'explode', x: d.x, y: d.y, big: d.kind === 'hive' || d.kind === 'commander' });
       m.kills++;
       registerKill(m, d);
+      if (d.kind === 'commander') m.flags.cmdKilled = 1;
     }
   }
   m.drones = m.drones.filter((d) => d.hp > 0);
@@ -1410,26 +2004,34 @@ function updateBoss(m: MissionState, wdt: number): void {
   }
   const phase = b.hp > b.maxHp * 0.66 ? 0 : b.hp > b.maxHp * 0.33 ? 1 : 2;
   if (phase !== b.phase) {
+    // A new phase: the shield slams back up behind a full set of generators, and escorts join.
     b.phase = phase;
     b.shielded = true;
     b.cycle = 0;
+    raiseGenerators(m, 3);
     m.events.push({ type: 'boss-phase', phase });
     if (phase >= 1) {
       spawnDrone(m, 'scout', 200, 200);
       spawnDrone(m, 'scout', 800, 200);
     }
   }
-  // Shield cycle: shielded (attacking), then vulnerable.
-  const shieldTime = [5.5, 5, 4.5][phase];
-  const openTime = [3.6, 3.2, 3][phase];
-  b.cycle += wdt;
-  if (b.shielded && b.cycle >= shieldTime) {
-    b.shielded = false;
-    b.cycle = 0;
-    m.events.push({ type: 'boss-vulnerable' });
-  } else if (!b.shielded && b.cycle >= openTime) {
-    b.shielded = true;
-    b.cycle = 0;
+  // The shield is fed by real generators: it holds while any is up. Once they are all down the core is
+  // exposed until the generators reboot.
+  const openTime = [7, 6, 5.5][phase];
+  if (b.shielded) {
+    if (tagged(m, 'generator').length === 0 && (m.flags.generatorTotal ?? 0) > 0) {
+      b.shielded = false;
+      b.cycle = 0;
+      m.events.push({ type: 'boss-vulnerable' });
+    }
+  } else {
+    b.cycle += wdt;
+    if (b.cycle >= openTime) {
+      b.shielded = true;
+      b.cycle = 0;
+      raiseGenerators(m, phase === 0 ? 2 : 3);
+      comms(m, 'Shield generators rebooting!', true);
+    }
   }
   // Slow drift side to side.
   b.x = 500 + Math.sin(m.time * 0.4) * 160;
@@ -1488,7 +2090,6 @@ function updateObjectives(m: MissionState, dt: number, wdt: number): void {
       m.events.push({ type: 'core', x: c.x, y: c.y });
     }
   }
-  if (m.def.id === 'first-contact' && m.cores.filter((c) => c.taken).length >= m.coresNeeded) openPortal(m);
 
   for (const g of m.gates) {
     if (g.passed) continue;
@@ -1508,36 +2109,44 @@ function updateObjectives(m: MissionState, dt: number, wdt: number): void {
     if (r.charge >= 1) {
       r.active = true;
       m.score += 300;
+      if (m.stability !== null) m.stability = Math.min(100, m.stability + 12);
       m.events.push({ type: 'reactor', x: r.x, y: r.y });
     }
   }
-  if (m.reactors.length && m.reactors.every((r) => r.active)) openPortal(m);
 
-  // Alien Swarm: every wave cleared with the frigate still flying.
-  if (m.def.id === 'breach-protocol' && m.cleared >= m.killsNeeded && m.waves.length === 0 && m.drones.length === 0 && m.allies.every((a) => !a.destroyed)) win(m);
-
-  // Escort missions: done when every surviving friendly ship has reached its destination.
-  if (m.allies.length && m.allies.some((a) => a.path.length > 0)) {
-    const living = m.allies.filter((a) => !a.destroyed);
-    if (living.length >= m.alliesNeeded && living.every((a) => a.arrived)) {
-      for (const a of living) m.score += Math.round(400 * (a.hp / a.maxHp));
-      m.events.push({ type: 'jump', x: living[0].x, y: living[0].y });
-      win(m);
+  // Orbital Collapse: hold on an emergency switch to open its blast door (in order).
+  const sw = m.switches.find((w) => !w.active);
+  if (sw) {
+    if (dist(s, sw) < sw.r) sw.charge = Math.min(1, sw.charge + dt / 0.8);
+    else sw.charge = Math.max(0, sw.charge - dt * 0.6);
+    if (sw.charge >= 1) {
+      sw.active = true;
+      m.walls = m.walls.filter((w) => w !== sw.door);
+      m.score += 250;
+      m.events.push({ type: 'switch', x: sw.door.x + sw.door.w / 2, y: sw.door.y });
+      comms(m, `Blast door ${sw.name} open.`);
     }
   }
 
-  // The Rescue: every pod home.
-  if (m.pods.length && m.pods.every((p) => p.state === 'saved')) win(m);
-
-  // The Last Jump: the drive charges in world time; when full, the capital ship jumps (and takes you).
-  if (m.jump && m.status === 'playing') {
-    m.jump.charge = Math.min(m.jump.duration, m.jump.charge + wdt);
-    if (m.jump.charge >= m.jump.duration) {
-      const cap = m.allies[0];
-      for (const a of m.allies) if (!a.destroyed) m.score += Math.round(800 * (a.hp / a.maxHp));
-      m.events.push({ type: 'jump', x: cap?.x ?? 500, y: cap?.y ?? 500 });
-      win(m);
+  // Reactor Meltdown: core stability falls; online reactors slow it, live turrets speed it up.
+  if (m.stability !== null && m.status === 'playing') {
+    const active = m.reactors.filter((r) => r.active).length;
+    const turrets = m.drones.filter((d) => d.kind === 'turret').length;
+    const drain = active === m.reactors.length ? 0.25 : 1.8 - 0.45 * active + 0.35 * turrets;
+    m.stability = Math.max(0, m.stability - drain * wdt);
+    if (m.stability < 30 && !m.flags.stabilityAlert) {
+      m.flags.stabilityAlert = 1;
+      comms(m, 'Core stability critical!', true);
     }
+    if (m.stability <= 0) lose(m, 'The reactor core went critical');
+  }
+  if (m.reactors.length && m.reactors.every((r) => r.active)) openPortal(m);
+
+  // The Last Jump: the drive charges in world time (raiders that hit the Meridian knock it back).
+  if (m.jump && m.status === 'playing') {
+    const full = m.jump.charge >= m.jump.duration;
+    m.jump.charge = Math.min(m.jump.duration, m.jump.charge + wdt);
+    if (!full && m.jump.charge >= m.jump.duration && m.def.phases[m.phase]?.id !== 'jump') comms(m, 'Jump drive fully charged. Clear the bombers so the Meridian can jump!', true);
   }
 
   // Singularity: the event horizon grows and the pull strengthens during the escape.
@@ -1546,8 +2155,30 @@ function updateObjectives(m: MissionState, dt: number, wdt: number): void {
     m.gravity.horizon += wdt * 36;
   }
 
-  // Entering an open portal completes missions where the player is the one who must get out.
-  if (m.portal?.open && m.allies.length === 0 && dist(s, m.portal) < m.portal.r - 6) win(m);
+  runPhases(m, wdt);
+}
+
+/** Advance the operation: when the current phase's goal is met, record it, announce it and start the next. */
+function runPhases(m: MissionState, wdt: number): void {
+  m.phaseTime += wdt;
+  const phases = m.def.phases;
+  // Several phases can resolve in one step (e.g. an escort that arrives the moment an ambush ends).
+  for (let guard = 0; guard < phases.length && m.status === 'playing'; guard++) {
+    const ph = phases[m.phase];
+    if (!ph || !ph.done(m)) return;
+    ph.complete?.(m);
+    m.phasesDone.push(ph.title);
+    m.phase++;
+    m.score += 200;
+    const next = phases[m.phase];
+    m.events.push({ type: 'objective', done: ph.title, next: next?.title ?? null });
+    if (!next) {
+      win(m);
+      return;
+    }
+    m.phaseTime = 0;
+    next.enter?.(m);
+  }
 }
 
 function updateAllies(m: MissionState, wdt: number): void {
@@ -1602,10 +2233,15 @@ function updatePods(m: MissionState, dt: number): void {
   let leader: Vec = s;
   for (const p of m.pods) {
     if (p.state === 'drifting') {
+      if (!p.found && dist(s, p) < 330) {
+        p.found = true;
+        m.events.push({ type: 'comms', text: `Escape pod located · ${m.pods.filter((x) => x.found).length}/${m.pods.length}`, alert: false });
+      }
       p.x += Math.sin(m.time * 0.7 + p.id) * 8 * dt;
       p.y += Math.cos(m.time * 0.5 + p.id) * 8 * dt;
       if (dist(s, p) < SHIP_R + 24 && m.pods.filter((x) => x.state === 'towed').length < TOW_MAX) {
         p.state = 'towed';
+        p.found = true;
         m.score += 100;
         m.events.push({ type: 'pod-tow', x: p.x, y: p.y });
       }
@@ -1624,7 +2260,7 @@ function updatePods(m: MissionState, dt: number): void {
     }
     leader = p;
     const z = m.rescueZone;
-    if (z && dist(p, z) < z.r) {
+    if (z && dist(p, z) < z.r && !m.flags.bayLocked) {
       p.state = 'saved';
       m.score += 300;
       m.events.push({ type: 'pod-saved', x: p.x, y: p.y });

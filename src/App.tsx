@@ -84,8 +84,8 @@ type Screen =
 const LOBBY: ReadonlySet<Screen> = new Set(['home', 'levels', 'modes', 'collection', 'records', 'profile', 'multiplayer', 'missions', 'legal', 'settings', 'premium', 'tutorial']);
 
 type RGB = [number, number, number];
-const CYAN: RGB = [79, 227, 240];
-const MAGENTA: RGB = [255, 79, 216];
+const CYAN: RGB = [76, 157, 255];
+const MAGENTA: RGB = [255, 159, 64];
 const rgb = (c: RGB) => `rgb(${c.join(',')})`;
 
 interface Run {
@@ -674,7 +674,7 @@ export default function App() {
         break;
       case 'objectiveComplete':
         fx.popup(ARENA / 2, ARENA * 0.4, 'COMPLETE', true);
-        fx.confetti(p.x, p.y, 80, [glow, '#FF4FD8', '#4FE3F0', '#F3F0EA']);
+        fx.confetti(p.x, p.y, 80, [glow, '#FF9F40', '#4C9DFF', '#F3F0EA']);
         fx.flash = 0.6;
         sfx.play('levelup');
         break;
@@ -698,7 +698,7 @@ export default function App() {
         sfx.play('bossHit');
         break;
       case 'bossDefeated':
-        fx.confetti(e.x, e.y, 120, [glow, '#FF4FD8', '#4FE3F0', '#F3F0EA']);
+        fx.confetti(e.x, e.y, 120, [glow, '#FF9F40', '#4C9DFF', '#F3F0EA']);
         fx.addShake(28);
         fx.flash = 1;
         break;
@@ -718,7 +718,7 @@ export default function App() {
         }
         break;
       case 'victory':
-        fx.victory(equipped(VICTORIES, progressRef.current.settings.victory, progressRef.current.xp, hasVerifiedChaosPlus()), ARENA / 2, ARENA / 2, [glow, '#FF4FD8', '#4FE3F0', '#FFD54A', '#F3F0EA']);
+        fx.victory(equipped(VICTORIES, progressRef.current.settings.victory, progressRef.current.xp, hasVerifiedChaosPlus()), ARENA / 2, ARENA / 2, [glow, '#FF9F40', '#4C9DFF', '#FFD54A', '#F3F0EA']);
         sfx.play('win');
         break;
     }
@@ -1178,7 +1178,7 @@ export default function App() {
 
       {lobby && (
         <div className="lobby">
-          <LobbyBackground accent={lobbyAccent} still={reducedMotion} />
+          <LobbyBackground accent={lobbyAccent} still={reducedMotion} ship={equippedShip(progress)} hero={screen === 'home' || screen === 'tutorial'} />
           {(screen === 'home' || screen === 'tutorial') && (
             <HomeScreen
               progress={progress}
@@ -1247,6 +1247,7 @@ export default function App() {
                 ship: equippedShip(progress),
                 trail: equipped(TRAILS, settings.trail, progress.xp, hasVerifiedChaosPlus()),
                 reducedMotion: reducedMotion || !settings.shake,
+                aimAssist: settings.aimAssist,
               }}
               isTouch={isTouch}
               start={missionStart}

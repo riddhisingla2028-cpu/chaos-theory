@@ -163,7 +163,7 @@ function ShipArt({ id }: { id: ShipId }) {
   const pts = HULLS[id].map(([x, y]) => `${x},${y}`).join(' ');
   return (
     <svg viewBox="-32 -30 64 60" width="56" height="52" aria-hidden="true">
-      <polygon points={pts} transform="rotate(-90)" fill="#1f2a4d" stroke={id === 'phantom' ? '#FFD54A' : '#4FE3F0'} strokeWidth="2" />
+      <polygon points={pts} transform="rotate(-90)" fill="#1f2a4d" stroke={id === 'phantom' ? '#FFD54A' : '#4C9DFF'} strokeWidth="2" />
       <ellipse cx="0" cy="-4" rx="4" ry="7" fill="#e8fbff" />
     </svg>
   );
@@ -247,6 +247,13 @@ export function SettingsScreen(props: { settings: Settings; onChange: (s: Partia
         </div>
 
         <h3 className="setting-group">Controls and feel</h3>
+        <div className="setting">
+          <span className="setting-label">
+            Aim assist
+            <span className="setting-help">Missions: a shot aimed within a few degrees of a target is straightened onto it. Off: shots fly exactly along the nose.</span>
+          </span>
+          <Segmented label="Aim assist" value={s.aimAssist === false ? 'off' : 'on'} options={[['on', 'On'], ['off', 'Off']]} onChange={(v) => props.onChange({ aimAssist: v === 'on' })} />
+        </div>
         <div className="setting">
           <span className="setting-label">Screen shake</span>
           <Segmented label="Screen shake" value={s.shake ? 'on' : 'off'} options={[['on', 'On'], ['off', 'Off']]} onChange={(v) => props.onChange({ shake: v === 'on' })} />

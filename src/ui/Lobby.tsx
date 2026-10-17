@@ -23,7 +23,7 @@ import {
   type RecordEntry,
 } from '../progress';
 import { challengeById, currentChallenges, weekKeyOf } from '../progression';
-import { MISSIONS } from '../mission/sim';
+import { MISSIONS, OPERATIONS, THREATS } from '../mission/sim';
 import { AdSlot } from './AdSlot';
 import { LICENSE_MESSAGES, STORE, activateLicense, forgetLicense, type PremiumStatus } from '../monetization/entitlements';
 import type { AudioState } from '../game/audio';
@@ -84,6 +84,7 @@ export function HomeScreen(props: {
   const allDone = done === MISSIONS.length;
   const playSub = allDone ? 'All missions complete · fly them again for stars' : `Mission ${nm.code} · ${nm.name}`;
   const ships = SHIPS.filter((sh) => sh.unlocked(p)).length;
+  const op = OPERATIONS[nm.id];
   const lvl = accountLevel(p);
   const today = currentChallenges(p.challenges, new Date()).daily!;
   const todayDone = today.done.filter(Boolean).length;
@@ -116,10 +117,27 @@ export function HomeScreen(props: {
             <span>THEORY</span>
           </h1>
           <p className="hero-tag">Reality is unstable. Your mission isn&rsquo;t.</p>
-          <button type="button" className="play-now" onClick={props.onContinue} autoFocus style={{ '--lvl': rgb(nm.accent) } as CSSProperties}>
+          <button type="button" className="play-now launch-ctl" onClick={props.onContinue} autoFocus style={{ '--lvl': rgb(nm.accent) } as CSSProperties}>
             <span className="play-now-label">{started ? 'Continue campaign' : 'Start campaign'}</span>
+            <span className="launch-status" aria-hidden="true">
+              <span className="launch-light" /> Ready to launch
+            </span>
             <span className="play-now-sub">{playSub}</span>
+            <span className={`threat threat-${op.threat.toLowerCase()}`}>
+              Threat <strong>{op.threat}</strong>
+            </span>
           </button>
+          <div className="brief-mini" aria-label="Next mission briefing">
+            <span className="brief-mini-op">
+              {op.op} · {op.kind}
+            </span>
+            <span className="brief-mini-obj">{nm.objective}</span>
+            <span className="threat-meter" aria-label={`Threat ${op.threat}`}>
+              {THREATS.map((th, k) => (
+                <span key={th} className={k <= THREATS.indexOf(op.threat) ? 'on' : ''} />
+              ))}
+            </span>
+          </div>
           <div className="campaign" aria-label={`${done} of ${MISSIONS.length} missions completed`}>
             <div className="campaign-bar">
               <span style={{ transform: `scaleX(${done / MISSIONS.length})` }} />

@@ -52,7 +52,7 @@ export function LevelPreview({ config, look, clip, label }: { config: GameConfig
           if (e.type === 'orb') fx.burst(e.x, e.y, 14, 260, false, 5, 0.5);
           else if (e.type === 'death') fx.burst(e.x, e.y, 30, 420, true, 7, 0.9);
           else if (e.type === 'bossHit') fx.burst(e.x, e.y, 24, 380, true, 6, 0.8);
-          else if (e.type === 'victory') fx.confetti(500, 500, 60, ['#4FE3F0', '#FF4FD8', '#FFD54A', '#F3F0EA']);
+          else if (e.type === 'victory') fx.confetti(500, 500, 60, ['#4C9DFF', '#FF9F40', '#FFD54A', '#EEF2F7']);
         }
         if (g.status !== 'playing' || g.time >= clip) holdUntil = now + 900;
       } else if (now > holdUntil) {

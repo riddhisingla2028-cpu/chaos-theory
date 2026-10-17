@@ -3,11 +3,27 @@ import { Fx } from '../game/fx';
 import { Input } from '../game/input';
 import type { Sfx } from '../game/audio';
 import { createRenderMemory, drawMission, type MissionLook } from '../mission/render';
-import { CHRONO_DURATION, MISSIONS, OVERDRIVE_TIME, comboMult, createMission, objectiveView, secondariesMet, starsFor, stepMission, type MissionEvent, type MissionState } from '../mission/sim';
-import { isMissionUnlocked, missionsCompleted, nextMission, type MissionOutcome, type MissionResult, type Progress } from '../progress';
+import {
+  CHRONO_DURATION,
+  MISSIONS,
+  OPERATIONS,
+  THREATS,
+  OVERDRIVE_TIME,
+  comboMult,
+  createMission,
+  objectiveTarget,
+  objectiveView,
+  secondariesMet,
+  starsFor,
+  stepMission,
+  type MissionEvent,
+  type MissionState,
+} from '../mission/sim';
+import { SHIPS, isMissionUnlocked, missionsCompleted, nextMission, type MissionOutcome, type MissionResult, type Progress } from '../progress';
 import { levelFromXp } from '../progression';
 import { AdSlot } from './AdSlot';
 import { BackButton, LockIcon, PauseIcon, PlayIcon, Stars } from './common';
+import { MissionArt } from './MissionArt';
 
 const rgb = (c: [number, number, number]) => `rgb(${c.join(',')})`;
 const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -52,6 +68,9 @@ export function MissionsScreen(props: {
 
 // ---------- Mission select ----------
 
+/** A real campaign reward tied to this mission (hull unlocks), if any. */
+const missionReward = (name: string) => SHIPS.find((sh) => !sh.premium && sh.req === `Complete ${name}`)?.name ?? null;
+
 function MissionSelect({ progress: p, onPick, onBack }: { progress: Progress; onPick: (i: number) => void; onBack: () => void }) {
   const done = missionsCompleted(p);
   const next = nextMission(p);
@@ -69,7 +88,9 @@ function MissionSelect({ progress: p, onPick, onBack }: { progress: Progress; on
           <div className="campaign-bar">
             <span style={{ transform: `scaleX(${done / MISSIONS.length})` }} />
           </div>
-          <span className="campaign-text">Campaign {done}/{MISSIONS.length} · tap a mission for its briefing</span>
+          <span className="campaign-text">
+            Campaign {done}/{MISSIONS.length} · tap a mission for its briefing
+          </span>
         </div>
         <ol className="level-list">
           {MISSIONS.map((m, i) => {
@@ -85,17 +106,31 @@ function MissionSelect({ progress: p, onPick, onBack }: { progress: Progress; on
                   aria-disabled={!open}
                   aria-label={`${open ? 'Mission' : 'Locked: mission'} ${m.code}, ${m.name}. ${m.objective}`}
                 >
-                  <span className="lc-num" aria-hidden="true">
-                    {open ? m.code : <LockIcon />}
+                  <span className="mc-art">
+                    <MissionArt id={m.id} locked={!open} />
+                    <span className="mc-code" aria-hidden="true">
+                      {open ? m.code : <LockIcon />}
+                    </span>
+                    <span className={`mc-state${rec?.completed ? ' done' : isNext ? ' next' : !open ? ' locked' : ''}`}>
+                      {rec?.completed ? 'Complete' : isNext ? 'Next' : open ? 'Available' : 'Locked'}
+                    </span>
                   </span>
                   <span className="lc-main">
+                    <span className="lc-op">
+                      {OPERATIONS[m.id].op} · {OPERATIONS[m.id].kind}
+                    </span>
                     <span className="lc-name">{m.name}</span>
                     <span className="lc-meta">{m.objective}</span>
                     <span className="lc-desc">{open ? m.tagline : `Complete Mission ${MISSIONS[i - 1].code} to unlock`}</span>
+                    <span className="mc-reward">
+                      {rec?.completed ? <Stars count={rec.stars} /> : <span className="mc-stars-empty">☆☆☆</span>}
+                      {missionReward(m.name) ? <span className="mc-unlock">Unlocks {missionReward(m.name)}</span> : null}
+                      {rec?.completed ? <span className="mc-best">Best {rec.best.toLocaleString()}</span> : null}
+                    </span>
                   </span>
                   <span className="lc-side">
-                    {rec?.completed ? <Stars count={rec.stars} /> : null}
-                    <span className={`lc-status${isNext ? ' lc-next' : ''}`}>{!open ? 'Locked' : rec?.completed ? `Best ${rec.best.toLocaleString()}` : isNext ? 'Next ▸' : 'Brief ▸'}</span>
+                    <span className={`threat threat-${OPERATIONS[m.id].threat.toLowerCase()}`}>{OPERATIONS[m.id].threat}</span>
+                    <span className={`lc-status${isNext ? ' lc-next' : ''}`}>{!open ? 'Locked' : isNext ? 'Launch ▸' : 'Brief ▸'}</span>
                   </span>
                 </button>
               </li>
@@ -122,8 +157,16 @@ function Briefing({ progress: p, i, isTouch, onLaunch, onBack }: { progress: Pro
       </header>
       <div className="screen-scroll narrow">
         <section className="brief-card">
-          <p className="eyebrow eyebrow-lvl">Mission {m.code}</p>
+          <p className="eyebrow eyebrow-lvl">
+            Mission {m.code} · {OPERATIONS[m.id].op} · {OPERATIONS[m.id].kind}
+          </p>
           <h3 className="brief-name">{m.name}</h3>
+          <span className="threat-meter threat-meter-lg" aria-label={`Threat ${OPERATIONS[m.id].threat}`}>
+            <span className="m-stat-label">Threat · {OPERATIONS[m.id].threat}</span>
+            {THREATS.map((th, k) => (
+              <span key={th} className={k <= THREATS.indexOf(OPERATIONS[m.id].threat) ? 'on' : ''} />
+            ))}
+          </span>
           <p className="brief-text">{m.briefing}</p>
           <div className="brief-obj">
             <span className="brief-label">Primary objective</span>
@@ -140,9 +183,49 @@ function Briefing({ progress: p, i, isTouch, onLaunch, onBack }: { progress: Pro
               ))}
             </ul>
           </div>
+          <div className="brief-obj">
+            <span className="brief-label">Operation plan</span>
+            <ol className="brief-plan">
+              {m.phases.map((ph, k) => (
+                <li key={ph.id}>
+                  <span className="brief-plan-n">{k + 1}</span>
+                  {ph.title}
+                </li>
+              ))}
+            </ol>
+          </div>
+          <div className="brief-controls" aria-label="Controls">
+            <span className="brief-label">Controls</span>
+            {isTouch ? (
+              <span>
+                <kbd>Drag</kbd> anywhere to fly
+                {m.weapons ? (
+                  <>
+                    {' '}
+                    · hold <kbd>FIRE</kbd> to shoot
+                  </>
+                ) : null}
+              </span>
+            ) : (
+              <span>
+                <kbd>WASD</kbd>/<kbd>Arrows</kbd> fly
+                {m.weapons ? (
+                  <>
+                    {' '}
+                    · <kbd>Space</kbd> or hold the <kbd>left mouse button</kbd> to fire
+                  </>
+                ) : null}{' '}
+                · <kbd>P</kbd>/<kbd>Esc</kbd> pause
+              </span>
+            )}
+          </div>
           <ul className="brief-tips">
-            <li>{isTouch ? 'Drag anywhere to fly.' : 'Fly with WASD or the arrow keys. P or Esc pauses.'}</li>
-            <li>Hull: {m.maxHp} hits. {m.weapons ? 'Your blaster locks on and fires automatically at targets in range.' : 'No weapons on this mission: avoid everything red or orange.'}</li>
+            <li>
+              Hull: {m.maxHp} hits.{' '}
+              {m.weapons
+                ? 'Your blaster fires straight ahead from the nose: point the ship at a target, then fire. Brackets show what is in your sights.'
+                : 'No weapons on this mission: avoid everything red or orange.'}
+            </li>
             <li>Watch for the rare CHRONO SHIFT pickup (it slows everything but you) and for shield, overdrive and repair cells.</li>
             <li>Shoot down enemies in quick succession to build a score chain up to x4.</li>
           </ul>
@@ -179,6 +262,11 @@ interface Hud {
   overdrive: number;
   chain: number;
   allies: { id: number; name: string; frac: number; down: boolean }[];
+  weapons: boolean;
+  hostiles: number;
+  incoming: boolean;
+  entrance: boolean;
+  locked: boolean;
 }
 
 function hudOf(m: MissionState): Hud {
@@ -190,11 +278,29 @@ function hudOf(m: MissionState): Hud {
     timeLeft: m.def.timeLimit !== null ? Math.max(0, m.def.timeLimit - m.time) : null,
     score: m.score,
     chrono: m.chrono.active,
-    boss: m.boss && !m.escaping ? { hp: Math.max(0, m.boss.hp), max: m.boss.maxHp, shielded: m.boss.shielded } : null,
+    boss:
+      m.boss && !m.escaping
+        ? {
+            hp: Math.max(0, m.boss.hp),
+            max: m.boss.maxHp,
+            shielded: m.boss.shielded,
+          }
+        : null,
     shield: m.power.shield,
     overdrive: m.power.overdrive,
     chain: m.combo.count >= 2 ? comboMult(m.combo.count) : 0,
-    allies: m.allies.map((a) => ({ id: a.id, name: a.name, frac: a.hp / a.maxHp, down: a.destroyed })),
+    allies: m.allies.map((a) => ({
+      id: a.id,
+      name: a.name,
+      frac: a.hp / a.maxHp,
+      down: a.destroyed,
+    })),
+    weapons: m.def.weapons,
+    hostiles: m.drones.filter((d) => d.spawnIn === 0).length + (m.boss && m.boss.hp > 0 ? 1 : 0),
+    // Something is about to fire at the player: a gunner/turret charging at you, or a beam warming up.
+    incoming: m.drones.some((d) => d.aim > 0 && (d.kind === 'turret' || d.targetAlly === null)) || !!(m.boss?.beam && m.boss.beam.warn > 0),
+    entrance: m.def.id === 'guardian' && m.time < 3,
+    locked: m.target !== null,
   };
 }
 
@@ -212,9 +318,21 @@ function MissionPlay(props: {
 }) {
   const def = MISSIONS[props.i];
   const mRef = useRef<MissionState>(createMission(def, props.seed || 1));
-  if (import.meta.env.DEV) (window as unknown as { __chaosMission?: () => MissionState }).__chaosMission = () => mRef.current;
+  if (import.meta.env.DEV) {
+    // Test hooks (development builds only): read-only views of the running mission.
+    const w = window as unknown as {
+      __chaosMission?: () => MissionState;
+      __chaosObjective?: () => { x: number; y: number } | null;
+    };
+    w.__chaosMission = () => mRef.current;
+    w.__chaosObjective = () => objectiveTarget(mRef.current);
+  }
   const fxRef = useRef(new Fx());
   const memRef = useRef(createRenderMemory(props.seed || 1));
+  const sfxRef = useRef(props.sfx);
+  sfxRef.current = props.sfx;
+  // The engine loop never outlives the mission screen
+  useEffect(() => () => sfxRef.current.setEngine(null), []);
   const inputRef = useRef(new Input());
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -225,8 +343,27 @@ function MissionPlay(props: {
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
   const [hud, setHud] = useState<Hud>(() => hudOf(mRef.current));
-  const [result, setResult] = useState<{ r: MissionResult; o: MissionOutcome; reason: string | null } | null>(null);
-  const [toast, setToast] = useState<{ key: number; text: string } | null>(null);
+  // HUD feedback: a red flash when the hull takes damage, a sweep when the objective advances.
+  const [hitKey, setHitKey] = useState(0);
+  const [objKey, setObjKey] = useState(0);
+  const prevHud = useRef(hud);
+  useEffect(() => {
+    const prev = prevHud.current;
+    prevHud.current = hud;
+    if (hud.hp < prev.hp) setHitKey((k) => k + 1);
+    if (hud.objective.progress > prev.objective.progress + 0.001 && hud.objective.count !== prev.objective.count) setObjKey((k) => k + 1);
+  }, [hud]);
+  const [result, setResult] = useState<{
+    r: MissionResult;
+    o: MissionOutcome;
+    reason: string | null;
+    debrief: Debrief;
+  } | null>(null);
+  const [toast, setToast] = useState<{
+    key: number;
+    text: string;
+    tag: 'Alert' | 'Comms' | 'Objective';
+  } | null>(null);
   const recorded = useRef(false);
   const lookRef = useRef(props.look);
   lookRef.current = props.look;
@@ -239,7 +376,7 @@ function MissionPlay(props: {
   }, []);
   const showPad = props.isTouch && portrait;
 
-  const say = useCallback((text: string) => setToast({ key: Date.now(), text }), []);
+  const say = useCallback((text: string, tag: 'Alert' | 'Comms' | 'Objective' = 'Alert') => setToast({ key: Date.now() + Math.random(), text, tag }), []);
 
   // Size the square arena to the space available (never stretched).
   useEffect(() => {
@@ -252,14 +389,19 @@ function MissionPlay(props: {
     return () => ro.disconnect();
   }, [showPad]);
 
-  // Launch countdown
+  // Launch countdown (the Guardian's arrival sounds the alarm)
   useEffect(() => {
-    props.sfx.play('start');
+    props.sfx.play('launch');
+    if (def.id === 'guardian') props.sfx.play('alarm');
     const t = setTimeout(() => setPhase((p) => (p === 'launch' ? 'playing' : p)), 1300);
     return () => clearTimeout(t);
-  }, [props.sfx]);
+  }, [props.sfx, def.id]);
 
   const pause = useCallback(() => setPhase((p) => (p === 'playing' ? 'paused' : p)), []);
+  // Nothing may stay stuck firing across a pause, an intro or the end of a mission.
+  useEffect(() => {
+    if (phase !== 'playing') inputRef.current.releaseFire();
+  }, [phase]);
   const resume = useCallback(() => setPhase((p) => (p === 'paused' ? 'playing' : p)), []);
 
   // Keyboard, blur and visibility. Listeners are removed when the mission screen unmounts.
@@ -269,17 +411,24 @@ function MissionPlay(props: {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       if (input.handleKey(e.code, true)) e.preventDefault();
+      if (e.code === 'Space') e.preventDefault(); // never scroll the page
       if (e.repeat) return;
       if (phaseRef.current === 'launch' && (e.code === 'Space' || e.code === 'Enter')) {
-        setPhase('playing'); // skip the intro
+        setPhase('playing'); // skip the intro (this press does not fire)
         return;
       }
+      if (phaseRef.current === 'playing') input.handleFireKey(e.code, true);
       if (e.code === 'KeyP' || e.code === 'Escape') {
         if (phaseRef.current === 'playing') pause();
         else if (phaseRef.current === 'paused') resume();
       }
     };
-    const up = (e: KeyboardEvent) => input.handleKey(e.code, false);
+    const up = (e: KeyboardEvent) => {
+      input.handleKey(e.code, false);
+      input.handleFireKey(e.code, false);
+    };
+    // A mouse button released anywhere (even outside the arena) stops firing.
+    const mouseUp = () => input.setMouseFire(false);
     const blur = () => {
       input.reset();
       pause();
@@ -288,8 +437,10 @@ function MissionPlay(props: {
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     window.addEventListener('blur', blur);
+    window.addEventListener('pointerup', mouseUp);
     document.addEventListener('visibilitychange', vis);
     return () => {
+      window.removeEventListener('pointerup', mouseUp);
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
       window.removeEventListener('blur', blur);
@@ -300,41 +451,68 @@ function MissionPlay(props: {
   const handleEvents = useCallback(
     (events: MissionEvent[]) => {
       const fx = fxRef.current;
+      const vfx = memRef.current.vfx;
+      const ship = mRef.current.ship;
       const sfx = props.sfx;
       for (const e of events) {
         switch (e.type) {
           case 'core':
-            fx.burst(e.x, e.y, 18, 260, false, 6);
-            fx.ring(e.x, e.y, 'rgba(79, 227, 240, 0.9)', 0, 500);
+            vfx.burst(e.x, e.y, 14, [140, 200, 255], 260);
+            vfx.flash(e.x, e.y, 50, 0.25, [140, 200, 255]);
+            fx.ring(e.x, e.y, 'rgba(76, 157, 255, 0.9)', 0, 500);
             fx.popup(e.x, e.y - 24, '+150');
             sfx.play('orb');
             break;
           case 'gate':
-            fx.ring(e.x, e.y, 'rgba(155, 123, 255, 0.9)', 0, 700);
+            fx.ring(e.x, e.y, 'rgba(125, 150, 235, 0.9)', 0, 700);
             fx.popup(e.x, e.y - 30, 'GATE');
             sfx.play('pass');
             break;
           case 'reactor':
             fx.ring(e.x, e.y, 'rgba(255, 213, 74, 0.95)', 0, 700);
-            fx.burst(e.x, e.y, 24, 300, false, 6);
+            vfx.burst(e.x, e.y, 20, [255, 213, 74], 300);
+            vfx.flash(e.x, e.y, 80, 0.35, [255, 213, 74]);
             fx.popup(e.x, e.y - 34, 'ONLINE');
             sfx.play('unlock');
             break;
           case 'portal-open':
-            fx.ring(e.x, e.y, 'rgba(79, 227, 240, 0.9)', 0, 900);
+            fx.ring(e.x, e.y, 'rgba(76, 157, 255, 0.9)', 0, 900);
             sfx.play('levelup');
             say('Portal open · fly in to extract');
             break;
           case 'shoot':
+            // The flash sits exactly where the bolt left: the muzzle and heading reported by the sim.
+            vfx.muzzle(e.x, e.y, e.angle);
             sfx.play('shoot');
             break;
+          case 'comms':
+            say(e.text, e.alert ? 'Alert' : 'Comms');
+            if (e.alert) sfx.play('warning');
+            break;
+          case 'objective':
+            say(e.next ? `${e.done} ✓ · Next: ${e.next}` : `${e.done} ✓`, 'Objective');
+            sfx.play('unlock');
+            break;
+          case 'deflect':
+            // A bolt stopped by an enemy shield: a blue ripple where it struck, no damage
+            vfx.shock(e.x, e.y, 120, 0.25, [120, 190, 255], 2);
+            vfx.impact(e.x, e.y, [150, 210, 255]);
+            break;
+          case 'switch':
+            vfx.flash(e.x, e.y, 120, 0.4, [255, 190, 120]);
+            vfx.burst(e.x, e.y, 16, [255, 190, 120], 260);
+            fx.addShake(4);
+            sfx.play('pass');
+            break;
           case 'enemy-shoot':
+            vfx.flash(e.x, e.y, 22, 0.1, [255, 159, 64]);
             sfx.play('enemyShot');
             break;
           case 'hit':
-            fx.addShake(14);
+            fx.addShake(9);
             fx.flash = 0.9;
-            fx.burst(e.x, e.y, 16, 320, true, 6);
+            vfx.hullHit(e.x, e.y);
+            memRef.current.hurt = 0.28;
             sfx.play('hit');
             if (navigator.vibrate) {
               try {
@@ -348,19 +526,21 @@ function MissionPlay(props: {
             sfx.play('near');
             break;
           case 'enemy-hit':
-            fx.burst(e.x, e.y, 4, 160, true, 4, 0.3);
+            vfx.impact(e.x, e.y, [255, 190, 120], Math.atan2(e.y - ship.y, e.x - ship.x) + Math.PI);
             break;
           case 'explode':
-            fx.burst(e.x, e.y, e.big ? 60 : 26, e.big ? 520 : 360, true, e.big ? 9 : 6, e.big ? 1.1 : 0.7);
-            fx.ring(e.x, e.y, 'rgba(255, 140, 66, 0.9)', 0, e.big ? 700 : 260);
-            fx.addShake(e.big ? 22 : 8);
-            sfx.play('explode');
+            // Flash, shockwave, sparks, tumbling hull fragments and smoke (pooled, render-only)
+            vfx.explosion(e.x, e.y, e.big ? 2 : 1);
+            fx.addShake(e.big ? 12 : 4);
+            // A big blast away from the player is a capital-class hull (the Guardian, a friendly ship)
+            sfx.play(e.big && Math.hypot(e.x - ship.x, e.y - ship.y) > 1 ? 'capitalDown' : 'explode');
             break;
           case 'warn':
             sfx.play('warning');
             break;
           case 'boss-phase':
-            fx.addShake(16);
+            fx.addShake(10);
+            if (mRef.current.boss) vfx.shock(mRef.current.boss.x, mRef.current.boss.y, 420, 0.7, [229, 72, 77], 4);
             sfx.play('chaos');
             say(e.phase === 1 ? 'The Guardian is enraged · beams incoming' : 'Final phase · ring bursts');
             break;
@@ -373,19 +553,23 @@ function MissionPlay(props: {
             break;
           case 'chrono-on':
             fx.ring(e.x, e.y, 'rgba(150, 210, 255, 0.9)', 0, 1100);
-            fx.ring(e.x, e.y, 'rgba(155, 123, 255, 0.7)', 0.15, 900);
+            fx.ring(e.x, e.y, 'rgba(125, 150, 235, 0.7)', 0.15, 900);
+            vfx.flash(e.x, e.y, 140, 0.5, [150, 210, 255]);
+            vfx.burst(e.x, e.y, 18, [170, 220, 255], 300);
             sfx.play('chronoOn');
             break;
           case 'chrono-off':
-            fx.ring(e.x, e.y, 'rgba(255, 79, 216, 0.9)', 0, 1300);
-            fx.addShake(10);
+            fx.ring(e.x, e.y, 'rgba(255, 159, 64, 0.9)', 0, 1300);
+            vfx.shock(e.x, e.y, 700, 0.6, [255, 190, 120], 3);
+            fx.addShake(6);
             sfx.play('chronoOff');
             break;
           case 'ally-hit':
-            fx.burst(e.x, e.y, 6, 200, true, 4, 0.4);
+            vfx.impact(e.x, e.y, [255, 190, 120]);
             break;
           case 'ally-lost':
-            fx.addShake(16);
+            vfx.chain(e.x, e.y, 34, 4, 0.7);
+            fx.addShake(10);
             say(`${e.name} is down`);
             break;
           case 'pod-tow':
@@ -407,7 +591,7 @@ function MissionPlay(props: {
             sfx.play('unlock');
             break;
           case 'shield-block':
-            fx.ring(e.x, e.y, 'rgba(120, 200, 255, 0.95)', 0, 500);
+            vfx.shieldHit(e.x, e.y);
             sfx.play('pass');
             say('Shield absorbed the hit');
             break;
@@ -416,22 +600,23 @@ function MissionPlay(props: {
             sfx.play('combo');
             break;
           case 'jump':
-            fx.ring(e.x, e.y, 'rgba(155, 123, 255, 0.95)', 0, 1400);
+            fx.ring(e.x, e.y, 'rgba(125, 150, 235, 0.95)', 0, 1400);
             fx.ring(e.x, e.y, 'rgba(255, 255, 255, 0.8)', 0.15, 1200);
+            vfx.flash(e.x, e.y, 260, 0.8, [170, 210, 255]);
             fx.flash = 0;
             sfx.play('levelup');
             break;
           case 'escape':
-            fx.addShake(26);
+            fx.addShake(14);
             sfx.play('chaos');
             say('The singularity is collapsing · ESCAPE SOUTH');
             break;
           case 'won':
-            fx.victory(lookRef.current.ship === 'phantom' ? 'supernova' : 'shockwave', mRef.current.ship.x, mRef.current.ship.y, ['#4FE3F0', '#FF4FD8', '#FFD54A', '#F3F0EA']);
+            fx.victory(lookRef.current.ship === 'phantom' ? 'supernova' : 'shockwave', mRef.current.ship.x, mRef.current.ship.y, ['#4C9DFF', '#FF9F40', '#FFD54A', '#F3F0EA']);
             sfx.play('win');
             break;
           case 'lost':
-            fx.addShake(24);
+            fx.addShake(14);
             sfx.play('death');
             break;
         }
@@ -457,7 +642,7 @@ function MissionPlay(props: {
       bossDefeated: !!m.boss && m.status === 'won',
     };
     const o = props.onRecord(r);
-    setResult({ r, o, reason: m.failReason });
+    setResult({ r, o, reason: m.failReason, debrief: debriefOf(m) });
     setPhase('done');
     if (o.newShips.length || o.newCosmetics.length) setTimeout(() => props.sfx.play('unlock'), 700);
   }, [props]);
@@ -475,7 +660,15 @@ function MissionPlay(props: {
       const m = mRef.current;
       const ph = phaseRef.current;
       if (ph === 'playing') {
-        stepMission(m, inputRef.current.vector(), dt);
+        stepMission(
+          m,
+          {
+            ...inputRef.current.vector(),
+            fire: inputRef.current.consumeFire(),
+            assist: lookRef.current.aimAssist !== false,
+          },
+          dt,
+        );
         handleEvents(m.events);
         if (m.status !== 'playing') {
           endClock += dt;
@@ -490,6 +683,8 @@ function MissionPlay(props: {
       if (hudClock > 0.08) {
         hudClock = 0;
         setHud(hudOf(m));
+        // Engine rumble follows thrust while flying; silent when paused or once the mission ends
+        sfxRef.current.setEngine(ph === 'playing' && m.status === 'playing' ? m.ship.thrust : null);
       }
       raf = requestAnimationFrame(frame);
     };
@@ -504,7 +699,14 @@ function MissionPlay(props: {
     const base = baseRef.current;
     const knob = knobRef.current;
     if (kind === 'down') {
-      Object.assign(j, { active: true, id: e.pointerId, ox: e.clientX, oy: e.clientY, x: 0, y: 0 });
+      Object.assign(j, {
+        active: true,
+        id: e.pointerId,
+        ox: e.clientX,
+        oy: e.clientY,
+        x: 0,
+        y: 0,
+      });
       (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
       if (base) {
         base.hidden = false;
@@ -529,15 +731,49 @@ function MissionPlay(props: {
     }
   };
 
+  // Touch FIRE button: in the control pad on portrait phones (clear of the arena), else over the arena corner.
+  const fireButton =
+    props.isTouch && def.weapons && (phase === 'playing' || phase === 'launch') ? (
+      <button
+        type="button"
+        className="m-fire"
+        aria-label="Fire"
+        onPointerDown={(e) => {
+          e.stopPropagation(); // never starts the movement joystick
+          e.preventDefault();
+          (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+          e.currentTarget.classList.add('down');
+          if (phaseRef.current === 'playing') inputRef.current.setTouchFire(e.pointerId, true);
+        }}
+        onPointerUp={(e) => {
+          e.stopPropagation();
+          e.currentTarget.classList.remove('down');
+          inputRef.current.setTouchFire(e.pointerId, false);
+        }}
+        onPointerCancel={(e) => {
+          e.currentTarget.classList.remove('down');
+          inputRef.current.setTouchFire(e.pointerId, false);
+        }}
+        onLostPointerCapture={(e) => {
+          e.currentTarget.classList.remove('down');
+          inputRef.current.setTouchFire(e.pointerId, false);
+        }}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        Fire
+      </button>
+    ) : null;
   const dpr = typeof window !== 'undefined' ? Math.min(2, window.devicePixelRatio || 1) : 1;
   const o = hud.objective;
   const chronoFrac = hud.chrono / CHRONO_DURATION;
   return (
     <div className="screen mission-play" style={{ '--lvl': rgb(def.accent) } as CSSProperties}>
-      <header className="m-hud" aria-label="Mission status">
+      <header className={`m-hud${hud.hp === 1 ? ' m-critical' : ''}`} aria-label="Mission status">
+        {hitKey > 0 && <span key={hitKey} className="m-hit-flash" aria-hidden="true" />}
         <div className="m-hud-row">
           <span className="m-title">
             <span className="m-code">{def.code}</span> {def.name}
+            <span className="m-op">{OPERATIONS[def.id].op}</span>
           </span>
           <span className="m-stat" aria-label="Score">
             <span className="m-stat-label">Score</span>
@@ -558,12 +794,16 @@ function MissionPlay(props: {
           </button>
         </div>
         <div className="m-hud-row m-hud-obj">
+          {objKey > 0 && <span key={objKey} className="m-obj-flash" aria-hidden="true" />}
           <span className="m-obj" aria-live="polite">
+            <span className="m-phase" title={o.title}>
+              Phase {o.phase}/{o.phases}
+            </span>
             <span className="m-obj-text">{o.text}</span>
             {o.count && <span className="m-obj-count">{o.count}</span>}
           </span>
-          <span className="m-hull" aria-label={`Hull ${hud.hp} of ${hud.maxHp}`}>
-            <span className="m-stat-label">Hull</span>
+          <span key={`hull-${hitKey}`} className={`m-hull${hitKey > 0 ? ' m-jolt' : ''}`} aria-label={`Hull ${hud.hp} of ${hud.maxHp}`}>
+            <span className="m-stat-label">{hud.hp === 1 ? 'Hull critical' : 'Hull'}</span>
             {Array.from({ length: hud.maxHp }, (_, k) => (
               <span key={k} className={k < hud.hp ? 'on' : ''} />
             ))}
@@ -572,31 +812,83 @@ function MissionPlay(props: {
         <div className="m-obj-bar" aria-hidden="true">
           <span style={{ transform: `scaleX(${o.progress})` }} />
         </div>
-        {(hud.allies.length > 0 || hud.shield || hud.overdrive > 0 || hud.chain > 0) && (
-          <div className="m-hud-row m-status">
-            {hud.allies.map((a) => (
-              <span key={a.id} className={`m-ally${a.down ? ' down' : a.frac < 0.35 ? ' low' : ''}`} aria-label={`${a.name} hull ${Math.round(a.frac * 100)}%`}>
-                <span className="m-ally-name">{a.name.replace(/^(Transport|Capital ship|Frigate) /, '')}</span>
-                <span className="m-ally-bar">
-                  <span style={{ transform: `scaleX(${a.down ? 0 : a.frac})` }} />
-                </span>
-              </span>
-            ))}
-            {hud.shield && <span className="m-chip m-chip-shield">Shield</span>}
-            {hud.overdrive > 0 && (
-              <span className="m-chip m-chip-od">
-                Overdrive <span className="m-chip-bar"><span style={{ transform: `scaleX(${hud.overdrive / OVERDRIVE_TIME})` }} /></span>
-              </span>
-            )}
-            {hud.chain > 0 && <span className="m-chip m-chip-chain">x{hud.chain} chain</span>}
+        {o.timer && (
+          <div className={`m-timer${o.timer.urgent ? ' urgent' : ''}`} role="status" aria-label={`${o.timer.label} ${o.timer.value}`}>
+            <span className="m-stat-label">{o.timer.label}</span>
+            <span className="m-timer-value">{o.timer.value}</span>
           </div>
         )}
+        <div className="m-hud-row m-status" aria-label="Ship systems">
+          <span className={`m-sys${hud.shield ? ' on' : ''}`}>
+            <span className="m-stat-label">Shield</span>
+            {hud.shield ? 'Online' : 'Offline'}
+          </span>
+          <span className={`m-sys${hud.weapons ? ' on' : ''}${hud.overdrive > 0 ? ' od' : ''}`}>
+            <span className="m-stat-label">Weapon</span>
+            {!hud.weapons ? 'Unarmed' : hud.overdrive > 0 ? 'Overdrive' : hud.locked ? 'Target in sights' : 'Blaster ready'}
+            {hud.overdrive > 0 && (
+              <span className="m-chip-bar">
+                <span
+                  style={{
+                    transform: `scaleX(${hud.overdrive / OVERDRIVE_TIME})`,
+                  }}
+                />
+              </span>
+            )}
+          </span>
+          <span className={`m-sys${hud.hostiles > 0 ? ' hostile' : ''}`}>
+            <span className="m-stat-label">Hostiles</span>
+            {hud.hostiles}
+          </span>
+          {hud.chain > 0 && <span className="m-chip m-chip-chain">x{hud.chain} chain</span>}
+          {hud.incoming && (
+            <span className="m-incoming" role="alert">
+              Incoming
+            </span>
+          )}
+          {hud.allies.map((a) => (
+            <span key={a.id} className={`m-ally${a.down ? ' down' : a.frac < 0.35 ? ' low' : ''}`} aria-label={`${a.name} hull ${Math.round(a.frac * 100)}%`}>
+              <span className="m-ally-name">{a.name.replace(/^(Transport|Capital ship|Frigate) /, '')}</span>
+              <span className="m-ally-bar">
+                <span style={{ transform: `scaleX(${a.down ? 0 : a.frac})` }} />
+              </span>
+            </span>
+          ))}
+        </div>
       </header>
 
-      <div className="m-stage" ref={wrapRef} onPointerDown={(e) => joy(e, 'down')} onPointerMove={(e) => joy(e, 'move')} onPointerUp={(e) => joy(e, 'up')} onPointerCancel={(e) => joy(e, 'up')}>
+      <div
+        className="m-stage"
+        ref={wrapRef}
+        onPointerDown={(e) => {
+          // Desktop: hold the left mouse button over the arena to fire.
+          if (e.pointerType === 'mouse' && e.button === 0 && phaseRef.current === 'playing') inputRef.current.setMouseFire(true);
+          joy(e, 'down');
+        }}
+        onPointerMove={(e) => joy(e, 'move')}
+        onPointerUp={(e) => {
+          if (e.pointerType === 'mouse') inputRef.current.setMouseFire(false);
+          joy(e, 'up');
+        }}
+        onPointerCancel={(e) => {
+          if (e.pointerType === 'mouse') inputRef.current.setMouseFire(false);
+          joy(e, 'up');
+        }}
+        onPointerLeave={(e) => {
+          if (e.pointerType === 'mouse') inputRef.current.setMouseFire(false);
+        }}
+      >
         <div className="m-arena" style={{ width: size, height: size }}>
           <canvas ref={canvasRef} width={size * dpr} height={size * dpr} style={{ width: size, height: size }} aria-label={`${def.name} mission arena`} />
-          {hud.boss && (
+          {!showPad && fireButton}
+          {hud.entrance && phase === 'playing' && (
+            <div className="m-entrance" role="alert">
+              <span className="m-entrance-kicker">Warning · capital-class hostile</span>
+              <span className="m-entrance-name">The Guardian</span>
+              <span className="m-entrance-hint">Shielded by generators. Destroy them all, then strike the core.</span>
+            </div>
+          )}
+          {hud.boss && !hud.entrance && (
             <div className={`m-boss${hud.boss.shielded ? ' shielded' : ''}`} aria-label={`Guardian ${hud.boss.hp} of ${hud.boss.max}`}>
               <span className="m-boss-name">The Guardian {hud.boss.shielded ? '· shielded' : '· VULNERABLE'}</span>
               <span className="m-boss-bar">
@@ -614,22 +906,33 @@ function MissionPlay(props: {
             </div>
           )}
           {toast && phase === 'playing' && (
-            <div key={toast.key} className="m-toast" role="status">
+            <div key={toast.key} className={`m-toast m-toast-${toast.tag.toLowerCase()}`} role="status">
+              <span className="m-toast-tag">{toast.tag}</span>
               {toast.text}
             </div>
           )}
           {phase === 'launch' && (
             <div className="m-launch" role="status" onPointerDown={() => setPhase('playing')}>
-              <span className="m-launch-kicker">Mission {def.code}</span>
+              <span className="m-launch-bar top" aria-hidden="true" />
+              <span className="m-launch-kicker">
+                Mission {def.code} · {OPERATIONS[def.id].op}
+              </span>
               <span className="m-launch-name">{def.name}</span>
               <span className="m-launch-obj">{def.objective}</span>
+              <span className={`m-launch-threat threat threat-${OPERATIONS[def.id].threat.toLowerCase()}`}>
+                Threat <strong>{OPERATIONS[def.id].threat}</strong>
+              </span>
+              <span className="m-launch-bar bottom" aria-hidden="true" />
             </div>
           )}
         </div>
         {showPad && (
-          <div className="touch-pad m-pad" aria-hidden="true">
-            <span className="touch-pad-ring" />
-            <span className="touch-pad-text">Drag here or anywhere to fly</span>
+          <div className="touch-pad m-pad">
+            <span className="touch-pad-ring" aria-hidden="true" />
+            <span className="touch-pad-text" aria-hidden="true">
+              Drag here or anywhere to fly
+            </span>
+            {fireButton}
           </div>
         )}
       </div>
@@ -642,7 +945,10 @@ function MissionPlay(props: {
           <div className="m-panel">
             <p className="m-kicker">Paused</p>
             <h3 className="m-panel-title">{def.name}</h3>
-            <p className="m-panel-text">{o.text}{o.count ? ` · ${o.count}` : ''}</p>
+            <p className="m-panel-text">
+              {o.text}
+              {o.count ? ` · ${o.count}` : ''}
+            </p>
             <div className="m-actions">
               <button type="button" className="btn btn-primary btn-wide" onClick={resume} autoFocus>
                 Resume
@@ -665,6 +971,31 @@ function MissionPlay(props: {
 
 const MEDALS = ['', 'Bronze', 'Silver', 'Gold'];
 
+interface Debrief {
+  phases: { title: string; done: boolean; current: boolean }[];
+  stats: [string, string][];
+}
+
+/** The debrief comes straight from the final mission state: what was completed, and what happened. */
+function debriefOf(m: MissionState): Debrief {
+  const phases = m.def.phases.map((ph, i) => ({
+    title: ph.title,
+    done: i < m.phase,
+    current: i === m.phase && m.status !== 'won',
+  }));
+  const stats: [string, string][] = [];
+  if (m.def.weapons) {
+    const shots = m.flags.shots ?? 0;
+    stats.push(['Kills', String(m.kills)], ['Accuracy', shots ? `${Math.round(((m.flags.shotsHit ?? 0) / shots) * 100)}%` : '–']);
+  }
+  stats.push(['Hits taken', String(m.hitsTaken)]);
+  if (m.pods.length) stats.push(['Survivors', `${m.pods.filter((p) => p.state === 'saved').length * 8}/${m.pods.length * 8}`]);
+  if (m.allies.length) stats.push(['Ships saved', `${m.allies.filter((a) => !a.destroyed).length}/${m.allies.length}`]);
+  if (m.stability !== null) stats.push(['Core stability', `${Math.max(0, Math.round(m.stability))}%`]);
+  if (m.def.id === 'alien-pursuit' && m.flags.commanderTotal) stats.push(['Command raider', m.flags.cmdKilled ? 'Destroyed' : 'Escaped']);
+  return { phases, stats };
+}
+
 /** A short, specific suggestion for the reason the mission failed. */
 export function failTip(reason: string): string {
   if (/debris/i.test(reason)) return 'Rocks drift in straight lines: watch their heading and pass behind them.';
@@ -674,6 +1005,7 @@ export function failTip(reason: string): string {
   if (/destroyed/i.test(reason)) return 'Stay close to the ships you protect and break up raider runs early.';
   if (/collapse/i.test(reason)) return 'Do not stop for long: the collapse speeds up the longer it runs.';
   if (/heat pulse/i.test(reason)) return 'Each pulse has a gap. Line up with it before the ring reaches you.';
+  if (/core went critical/i.test(reason)) return 'Every reactor you bring online slows the decline, and destroying the turrets helps too.';
   if (/critical|life support|time/i.test(reason)) return 'Plan a route between objectives and skip the long detours.';
   if (/beam|Guardian/i.test(reason)) return 'A red dashed line means a beam: get off the line before it fires.';
   if (/horizon/i.test(reason)) return 'Head for the portal the moment the Guardian falls; the pull keeps getting stronger.';
@@ -683,16 +1015,26 @@ export function failTip(reason: string): string {
 
 function MissionResultPanel(props: {
   def: (typeof MISSIONS)[number];
-  result: { r: MissionResult; o: MissionOutcome; reason: string | null };
+  result: {
+    r: MissionResult;
+    o: MissionOutcome;
+    reason: string | null;
+    debrief: Debrief;
+  };
   onRetry: () => void;
   onNext: () => void;
   onMissions: () => void;
 }) {
-  const { r, o, reason } = props.result;
+  const { r, o, reason, debrief } = props.result;
   const def = props.def;
   const hasNext = def.index < MISSIONS.length - 1;
   const level = levelFromXp(o.xpBefore + o.xpGained);
-  const unlocked = [...(o.firstClear && hasNext ? [`Mission ${MISSIONS[def.index + 1].code} · ${MISSIONS[def.index + 1].name}`] : []), ...o.newShips, ...o.newCosmetics, ...o.challengesCompleted.map((c) => `${c.scope === 'daily' ? 'Daily' : 'Weekly'} challenge: ${c.def.text}`)];
+  const unlocked = [
+    ...(o.firstClear && hasNext ? [`Mission ${MISSIONS[def.index + 1].code} · ${MISSIONS[def.index + 1].name}`] : []),
+    ...o.newShips,
+    ...o.newCosmetics,
+    ...o.challengesCompleted.map((c) => `${c.scope === 'daily' ? 'Daily' : 'Weekly'} challenge: ${c.def.text}`),
+  ];
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.repeat) return;
@@ -705,8 +1047,14 @@ function MissionResultPanel(props: {
   return (
     <div className="m-overlay" role="dialog" aria-label={r.won ? 'Mission complete' : 'Mission failed'}>
       <div className={`m-panel m-result ${r.won ? 'won' : 'lost'}`}>
+        <span className="m-result-art" aria-hidden="true">
+          <MissionArt id={def.id} />
+        </span>
         <p className="m-kicker">{r.won ? 'Mission complete' : 'Mission failed'}</p>
         <h3 className="m-panel-title">{def.name}</h3>
+        <p className="m-result-op">
+          {OPERATIONS[def.id].op} · Threat {OPERATIONS[def.id].threat}
+        </p>
         {!r.won && reason && <p className="m-reason">{reason}</p>}
         {!r.won && reason && <p className="m-tip">Tip: {failTip(reason)}</p>}
         {r.won && (
@@ -730,6 +1078,25 @@ function MissionResultPanel(props: {
             </span>
           )}
         </div>
+        <div className="m-debrief" aria-label="Operation debrief">
+          <span className="m-stat-label">Primary objective · {r.won ? 'complete' : 'failed'}</span>
+          <ol className="m-phases">
+            {debrief.phases.map((ph) => (
+              <li key={ph.title} className={ph.done ? 'met' : ph.current ? 'current' : ''}>
+                <span aria-hidden="true">{ph.done ? '✓' : ph.current ? '✕' : '·'}</span> {ph.title}
+              </li>
+            ))}
+          </ol>
+          <div className="m-debrief-stats">
+            {debrief.stats.map(([label, value]) => (
+              <span key={label}>
+                <span className="m-stat-label">{label}</span>
+                {value}
+              </span>
+            ))}
+          </div>
+        </div>
+        <span className="m-stat-label m-optional-label">Optional objectives</span>
         <ul className="m-secondary">
           {def.secondaries.map((s, k) => (
             <li key={s.id} className={r.secondaries[k] ? 'met' : ''}>

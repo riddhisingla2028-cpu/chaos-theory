@@ -41,7 +41,7 @@ export interface Look {
 const TEXT = '#F3F0EA';
 const text = (a: number) => `rgba(243, 240, 234, ${a})`;
 let accentRgb: [number, number, number] = [200, 75, 75];
-let glowRgb: [number, number, number] = [79, 227, 240];
+let glowRgb: [number, number, number] = [76, 157, 255];
 const acc = (a: number) => `rgba(${accentRgb[0]}, ${accentRgb[1]}, ${accentRgb[2]}, ${a})`;
 const neon = (a: number) => `rgba(${glowRgb[0]}, ${glowRgb[1]}, ${glowRgb[2]}, ${a})`;
 
@@ -987,7 +987,7 @@ function drawPlayer(ctx: CanvasRenderingContext2D, s: GameState, shape: ShapeId,
     const fg = ctx.createLinearGradient(-12, 0, -12 - flame, 0);
     fg.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
     fg.addColorStop(0.3, neon(0.9));
-    fg.addColorStop(1, 'rgba(255, 79, 216, 0)');
+    fg.addColorStop(1, 'rgba(255, 159, 64, 0)');
     ctx.fillStyle = fg;
     ctx.beginPath();
     ctx.moveTo(-10, -6);
@@ -1065,7 +1065,7 @@ function drawPopups(ctx: CanvasRenderingContext2D, fx: Fx): void {
   ctx.textBaseline = 'middle';
   for (const pop of fx.popups) {
     const a = Math.min(1, (pop.life / pop.max) * 1.6);
-    ctx.font = `700 ${pop.big ? 58 : 32}px Unbounded, ui-sans-serif, system-ui, -apple-system, sans-serif`;
+    ctx.font = `700 ${pop.big ? 58 : 32}px Rajdhani, ui-sans-serif, system-ui, -apple-system, sans-serif`;
     ctx.fillStyle = pop.big ? neon(a) : text(a);
     ctx.fillText(pop.text, pop.x, pop.y);
   }
@@ -1075,11 +1075,11 @@ function drawPopups(ctx: CanvasRenderingContext2D, fx: Fx): void {
 
 /** Distinct, colour-blind-friendlier player colours; each player also keeps their own shape and name tag. */
 export const MP_COLORS: [number, number, number][] = [
-  [79, 227, 240],
-  [255, 79, 216],
+  [76, 157, 255],
+  [255, 159, 64],
   [255, 213, 74],
   [91, 240, 138],
-  [155, 123, 255],
+  [125, 150, 235],
   [255, 140, 66],
 ];
 
@@ -1096,7 +1096,7 @@ const mpHeading = new Map<string, { x: number; y: number; a: number }>();
 
 export function drawMatch(ctx: CanvasRenderingContext2D, d: MatchRenderData, sizePx: number, dpr: number, t: number): void {
   accentRgb = [255, 90, 90];
-  glowRgb = [79, 227, 240];
+  glowRgb = [76, 157, 255];
   const scale = sizePx / ARENA;
   const px = 1 / scale;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
