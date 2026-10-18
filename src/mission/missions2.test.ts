@@ -80,7 +80,7 @@ describe('Mission 03 · The Rescue', () => {
     const m = make('rescue');
     m.rocks = [];
     m.drones = [];
-    m.waves = [];
+    m.encounters = m.encounters.filter((e) => e.id !== 'patrol'); // no patrol; the boarders still come
     // Invariant checked on every step: no survivor is landed while the bay is sealed.
     const savedNow = () => m.pods.filter((p) => p.state === 'saved').length;
     let sealedSaves = 0;
@@ -112,8 +112,9 @@ describe('Mission 03 · The Rescue', () => {
     go(m.rescueZone!);
     hover(1);
     expect(m.pods.filter((p) => p.state === 'saved').length).toBe(3);
-    // Phase 2: raiders close on the rescue ship and the bay seals.
+    // Phase 2: raiders close on the rescue ship and the bay seals. They are announced, then warp in.
     expect(m.flags.bayLocked).toBe(1);
+    for (let i = 0; i < 60 * 3 && m.drones.filter((d) => d.tag === 'boarders').length < 3; i++) tick({ x: 0, y: 0 });
     expect(m.drones.filter((d) => d.tag === 'boarders')).toHaveLength(3);
     // Shoot the boarders down (any that ram the ship are destroyed too).
     while (m.drones.some((d) => d.tag === 'boarders' && d.hp > 0) && m.realTime < 200) {
@@ -140,13 +141,14 @@ describe('Mission 03 · The Rescue', () => {
   it('while raiders threaten the rescue ship the bay is sealed: a towed pod is held, not saved', () => {
     const m = make('rescue');
     m.drones = [];
-    m.waves = [];
+    m.encounters = m.encounters.filter((e) => e.id !== 'patrol'); // no patrol; the boarders still come
     m.rocks = [];
     // Bring three survivors home to trigger the raid.
     for (const p of m.pods.slice(0, 3)) p.state = 'saved';
     stepMission(m, { x: 0, y: 0 }, DT);
     expect(m.def.phases[m.phase].id).toBe('secure');
     expect(m.flags.bayLocked).toBe(1);
+    for (let i = 0; i < 60 * 3 && m.drones.length < 3; i++) stepMission(m, { x: 0, y: 0 }, DT);
     for (const d of m.drones) d.spawnIn = 999; // keep the raiders inert for this rules check
     const pod = m.pods[3];
     pod.state = 'towed';
@@ -162,7 +164,7 @@ describe('Mission 03 · The Rescue', () => {
   it('life support runs out: a timeout fails the mission with a clear reason', () => {
     const m = make('rescue');
     m.drones = [];
-    m.waves = [];
+    m.encounters = []; // no scripted enemies
     for (let i = 0; i < 60 * 115 && m.status === 'playing'; i++) {
       m.rocks = [];
       stepMission(m, { x: 0, y: 0 }, DT);
@@ -174,7 +176,7 @@ describe('Mission 03 · The Rescue', () => {
   it('debris straight ahead breaks apart only when the player fires at it', () => {
     const m = make('rescue');
     m.drones = [];
-    m.waves = [];
+    m.encounters = []; // no scripted enemies
     const rock = m.rocks[0];
     m.rocks = [{ ...rock, x: m.ship.x, y: m.ship.y - 200, vx: 0, vy: 0, hp: 3 }];
     for (let i = 0; i < 90; i++) stepMission(m, { x: 0, y: 0 }, DT);
@@ -187,7 +189,7 @@ describe('Mission 03 · The Rescue', () => {
   it('the scanner locates pods within range; towing never fires at a pod', () => {
     const m = make('rescue');
     m.drones = [];
-    m.waves = [];
+    m.encounters = []; // no scripted enemies
     m.rocks = [];
     expect(m.pods.every((p) => !p.found)).toBe(true);
     const p = m.pods[0];
@@ -275,7 +277,7 @@ describe('power-ups, chains and skill bonuses', () => {
     expect(comboMult(3)).toBe(2);
     expect(comboMult(20)).toBe(4);
     const m = make('breach-protocol');
-    m.waves = [];
+    m.encounters = []; // no scripted enemies
     m.drones = [];
     m.killsNeeded = 99;
     for (let k = 0; k < 3; k++) m.drones.push({ id: 500 + k, kind: 'scout', x: 500, y: 500, vx: 0, vy: 0, hp: 0, maxHp: 5, fireIn: 9, aim: 0, hitFlash: 0, spawnIn: 0, targetAlly: null });

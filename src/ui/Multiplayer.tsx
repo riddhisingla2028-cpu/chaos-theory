@@ -7,6 +7,13 @@ import { hostRoom, joinRoom, type HostEndpoint } from '../net/peer';
 import { BackButton, ShapePreview } from './common';
 import { track } from '../analytics';
 import type { ShapeId } from '../progress';
+import type { Sfx } from '../game/audio';
+import { OP_MAX_PLAYERS } from '../net/room';
+import { CoopMatchView, CoopResultsPanel } from './CoopMatch';
+import { OP_INFO, startState } from './coopView';
+
+/** What the host picks when creating a room: a co-op operation or an Arcade mode. */
+type Choice = MatchMode | 'op:twin-lock';
 
 const NAME_KEY = 'chaos-theory.mp.name';
 const TOKEN_KEY = 'chaos-theory.mp.token';
@@ -43,10 +50,11 @@ export const inviteCodeFromUrl = (): string | null => {
 
 type Session = { kind: 'host'; room: HostRoom; endpoint: HostEndpoint } | { kind: 'client'; room: ClientRoom };
 
-export function MultiplayerScreen(props: { shape: ShapeId; isTouch: boolean; initialCode: string | null; onBack: () => void; onInMatch: (on: boolean) => void }) {
+export function MultiplayerScreen(props: { shape: ShapeId; isTouch: boolean; initialCode: string | null; onBack: () => void; onInMatch: (on: boolean) => void; sfx?: Sfx; reducedMotion?: boolean; aimAssist?: boolean }) {
   const [name, setName] = useState(() => storage('local')?.getItem(NAME_KEY) ?? '');
   const [code, setCode] = useState(props.initialCode ?? '');
-  const [mode, setMode] = useState<MatchMode>('coop');
+  const [choice, setChoice] = useState<Choice>('coop');
+  const mode: MatchMode = choice === 'op:twin-lock' ? 'coop' : choice;
   const [busy, setBusy] = useState<null | 'create' | 'join'>(null);
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -98,6 +106,7 @@ export function MultiplayerScreen(props: { shape: ShapeId; isTouch: boolean; ini
     for (let attempt = 0; attempt < 3; attempt++) {
       const roomCode = makeRoomCode();
       const room = new HostRoom(roomCode, mode, { id: token, name: finalName, shape: props.shape });
+      if (choice === 'op:twin-lock') room.setOperation('twin-lock');
       try {
         const endpoint = await hostRoom(
           roomCode,
@@ -105,7 +114,7 @@ export function MultiplayerScreen(props: { shape: ShapeId; isTouch: boolean; ini
           () => setError('Lost contact with the matchmaking service. Players already in the room can keep playing.'),
         );
         setSession({ kind: 'host', room, endpoint });
-        track('mp_room_created', { mode });
+        track('mp_room_created', { mode: choice === 'op:twin-lock' ? 'twin-lock' : mode });
         setBusy(null);
         return;
       } catch (e) {
@@ -151,7 +160,15 @@ export function MultiplayerScreen(props: { shape: ShapeId; isTouch: boolean; ini
         </Shell>
       );
     }
+    if (view.phase === 'playing' && view.op)
+      return <CoopMatchView session={session} view={view} isTouch={props.isTouch} sfx={props.sfx} reducedMotion={!!props.reducedMotion} aimAssist={props.aimAssist !== false} onLeave={leave} />;
     if (view.phase === 'playing') return <MatchView session={session} view={view} isTouch={props.isTouch} onLeave={leave} />;
+    if (view.phase === 'results' && view.results?.op)
+      return (
+        <Shell title="Debrief" onBack={leave}>
+          <CoopResultsPanel view={view} isHost={session.kind === 'host'} onRematch={() => session.kind === 'host' && session.room.rematch()} onLeave={leave} />
+        </Shell>
+      );
     if (view.phase === 'results') return <Results session={session} view={view} onLeave={leave} />;
     return <Lobby session={session} view={view} onLeave={leave} />;
   }
@@ -167,8 +184,13 @@ export function MultiplayerScreen(props: { shape: ShapeId; isTouch: boolean; ini
         <section className="mp-card">
           <h3 className="mp-h">Create a private room</h3>
           <div className="mp-modes" role="radiogroup" aria-label="Game mode">
+            <button type="button" role="radio" aria-checked={choice === 'op:twin-lock'} className={`mp-mode mp-mode-op${choice === 'op:twin-lock' ? ' mp-mode-on' : ''}`} onClick={() => setChoice('op:twin-lock')}>
+              <span className="mp-mode-name">{OP_INFO['twin-lock'].name}</span>
+              <span className="mp-mode-blurb">{OP_INFO['twin-lock'].blurb}</span>
+            </button>
+            <p className="mp-modes-label">Arcade</p>
             {MATCH_MODES.map((m) => (
-              <button key={m.id} type="button" role="radio" aria-checked={mode === m.id} className={`mp-mode${mode === m.id ? ' mp-mode-on' : ''}`} onClick={() => setMode(m.id)}>
+              <button key={m.id} type="button" role="radio" aria-checked={choice === m.id} className={`mp-mode${choice === m.id ? ' mp-mode-on' : ''}`} onClick={() => setChoice(m.id)}>
                 <span className="mp-mode-name">{m.name}</span>
                 <span className="mp-mode-blurb">{m.blurb}</span>
               </button>
@@ -205,8 +227,8 @@ export function MultiplayerScreen(props: { shape: ShapeId; isTouch: boolean; ini
           </p>
         )}
         <p className="mp-fine">
-          Rooms are private: only people with the code or invite link can join, up to 6 players. Players connect directly to each other (peer to peer), so
-          they can see each other&rsquo;s network address. Boss Co-op is not available yet.
+          Rooms are private: only people with the code or invite link can join, up to 6 players (co-op operations fly 2–{OP_MAX_PLAYERS}). Players connect
+          directly to each other (peer to peer), so they can see each other&rsquo;s network address.
         </p>
       </div>
     </Shell>
@@ -253,7 +275,7 @@ function Lobby({ session, view, onLeave }: { session: Session; view: RoomView; o
   const host = session.kind === 'host' ? session.room : null;
   const connected = view.players.filter((p) => p.connected);
   const startable = host?.canStart() ?? false;
-  const why = connected.length < 2 ? 'Waiting for at least one more player' : !connected.every((p) => p.ready) ? 'Waiting for everyone to be ready' : '';
+  const why = startState(view).reason ?? '';
 
   const copy = async () => {
     try {
@@ -294,9 +316,12 @@ function Lobby({ session, view, onLeave }: { session: Session; view: RoomView; o
       <section className="mp-card">
         <div className="section-head">
           <h3>Players</h3>
-          <span className="dim">{view.players.length}/6</span>
+          <span className="dim" data-testid="mp-count">
+            {connected.length}/{view.op ? OP_MAX_PLAYERS : 6}
+          </span>
         </div>
         <PlayerList view={view} />
+        {view.op && <p className="mp-hint mp-op-need">Co-op operations need 2–{OP_MAX_PLAYERS} connected players, all ready. Each player flies their own ship.</p>}
       </section>
 
       <section className="mp-card">
@@ -305,13 +330,22 @@ function Lobby({ session, view, onLeave }: { session: Session; view: RoomView; o
         </div>
         {host ? (
           <div className="mp-modes" role="radiogroup" aria-label="Game mode">
+            <button type="button" role="radio" aria-checked={view.op === 'twin-lock'} className={`mp-mode mp-mode-op${view.op === 'twin-lock' ? ' mp-mode-on' : ''}`} onClick={() => host.setOperation('twin-lock')}>
+              <span className="mp-mode-name">{OP_INFO['twin-lock'].name}</span>
+              <span className="mp-mode-blurb">{OP_INFO['twin-lock'].blurb}</span>
+            </button>
+            <p className="mp-modes-label">Arcade</p>
             {MATCH_MODES.map((m) => (
-              <button key={m.id} type="button" role="radio" aria-checked={view.mode === m.id} className={`mp-mode${view.mode === m.id ? ' mp-mode-on' : ''}`} onClick={() => host.setMode(m.id)}>
+              <button key={m.id} type="button" role="radio" aria-checked={!view.op && view.mode === m.id} className={`mp-mode${!view.op && view.mode === m.id ? ' mp-mode-on' : ''}`} onClick={() => host.setMode(m.id)}>
                 <span className="mp-mode-name">{m.name}</span>
                 <span className="mp-mode-blurb">{m.blurb}</span>
               </button>
             ))}
           </div>
+        ) : view.op ? (
+          <p className="mp-mode-static">
+            <strong>{OP_INFO[view.op].name}</strong> · {OP_INFO[view.op].blurb}
+          </p>
         ) : (
           <p className="mp-mode-static">
             <strong>{matchMode(view.mode).name}</strong> · {matchMode(view.mode).blurb}
@@ -322,17 +356,21 @@ function Lobby({ session, view, onLeave }: { session: Session; view: RoomView; o
       <div className="mp-actions">
         {host ? (
           <>
-            <button type="button" className="btn btn-primary btn-wide" disabled={!startable} onClick={() => host.start() && track('mp_match_started', { mode: view.mode, players: connected.length })}>
-              Start match
+            <button type="button" className="btn btn-primary btn-wide" disabled={!startable} onClick={() => host.start() && track('mp_match_started', { mode: view.op ?? view.mode, players: connected.length })}>
+              {view.op ? 'Launch operation' : 'Start match'}
             </button>
-            {!startable && <p className="mp-hint">{why}</p>}
+            {why && (
+              <p className="mp-hint" role="status" data-testid="mp-why">
+                {why}
+              </p>
+            )}
           </>
         ) : (
           <>
             <button type="button" className={`btn btn-wide${me?.ready ? '' : ' btn-primary'}`} onClick={() => (session as { room: ClientRoom }).room.setReady(!me?.ready)}>
               {me?.ready ? 'Not ready' : "I'm ready"}
             </button>
-            <p className="mp-hint">The host starts the match when everyone is ready.</p>
+            <p className="mp-hint">{view.op ? 'The host launches the operation when 2–4 players are connected and everyone is ready.' : 'The host starts the match when everyone is ready.'}</p>
           </>
         )}
         <button type="button" className="btn btn-small" onClick={onLeave}>

@@ -6706,6 +6706,39 @@ body {
   color: #ff6b70;
   animation: launch-blink 0.7s steps(2, end) infinite;
 }
+.m-contact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 4px 8px;
+  margin-top: -2px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: #cfd8e8;
+}
+.m-contact-name {
+  color: #ffb27a;
+}
+.m-contact.inbound .m-contact-name,
+.m-contact.inbound .m-contact-from {
+  color: #ff6b70;
+  animation: launch-blink 0.7s steps(2, end) infinite;
+}
+.m-contact-left {
+  color: #fff;
+}
+.m-contact-hold {
+  flex-basis: 100%;
+  text-align: right;
+  color: #ffd54a;
+}
+@media (prefers-reduced-motion: reduce) {
+  .m-contact.inbound .m-contact-name,
+  .m-contact.inbound .m-contact-from {
+    animation: none;
+  }
+}
 .m-toast-comms {
   border-color: rgba(76, 157, 255, 0.6) !important;
   border-left-color: var(--neon) !important;
@@ -6849,4 +6882,168 @@ body {
 }
 .m-pad:has(.m-fire) {
   padding-right: 120px;
+}
+
+/* ---------- Co-op operations (P2.4) ---------- */
+.mp-modes-label {
+  margin: 6px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim, #8b93a7);
+}
+.mp-mode-op {
+  border-color: rgba(120, 200, 255, 0.45);
+  background: linear-gradient(135deg, rgba(76, 157, 255, 0.08), transparent 60%);
+}
+.mp-op-need {
+  margin-top: 8px;
+}
+.co-team {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.co-pilot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--pc) 45%, transparent);
+  border-radius: 8px;
+  background: rgba(5, 8, 16, 0.55);
+  font-size: 12px;
+}
+.co-me {
+  border-color: var(--pc);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--pc) 35%, transparent);
+}
+.co-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--pc);
+  box-shadow: 0 0 6px var(--pc);
+}
+.co-name {
+  font-weight: 700;
+  color: var(--pc);
+}
+.co-state {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #cfd8e8;
+}
+.co-downed {
+  border-color: #ff6b70;
+  animation: co-pulse 1s steps(2, end) infinite;
+}
+.co-downed .co-state {
+  color: #ff6b70;
+  font-weight: 700;
+}
+.co-offline {
+  opacity: 0.5;
+}
+@keyframes co-pulse {
+  50% {
+    box-shadow: 0 0 12px rgba(255, 72, 88, 0.6);
+  }
+}
+.co-hull {
+  display: flex;
+  gap: 3px;
+}
+.co-hull > span {
+  width: 9px;
+  height: 6px;
+  border-radius: 2px;
+  background: rgba(243, 240, 234, 0.12);
+  transform: skewX(-20deg);
+}
+.co-hull > span.on {
+  background: var(--pc);
+}
+.co-callout {
+  margin-top: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(5, 5, 10, 0.82);
+  border: 1px solid rgba(120, 200, 255, 0.5);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+}
+.co-callout-danger {
+  border-color: #ff6b70;
+  color: #ffd0d2;
+}
+.co-callout-action {
+  border-color: #6fdc9c;
+  color: #d6ffe6;
+}
+.co-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 18px;
+  margin: 8px 0;
+  font-family: var(--mono);
+  font-size: 15px;
+}
+.co-summary > span {
+  display: grid;
+  justify-items: center;
+}
+.co-phases {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: #ff9da1;
+}
+.co-phases li.done {
+  color: #9fe7bd;
+}
+.co-table-wrap {
+  overflow-x: auto;
+}
+.co-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.co-table th,
+.co-table td {
+  padding: 6px clamp(4px, 1.4vw, 8px);
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+.co-table th[scope='row'],
+.co-table thead th:first-child {
+  text-align: left;
+  color: var(--pc, inherit);
+}
+.co-table tr.co-me {
+  background: rgba(76, 157, 255, 0.08);
+}
+@media (max-width: 480px) {
+  .co-table {
+    font-size: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .co-downed {
+    animation: none;
+  }
 }

@@ -9,7 +9,7 @@ import { DT } from './testkit';
 function range(): MissionState {
   const m = createMission(missionById('breach-protocol'), 3);
   m.drones = [];
-  m.waves = [];
+  m.encounters = []; // no scripted enemies
   m.walls = [];
   m.rocks = [];
   m.allies = [];
@@ -329,6 +329,24 @@ describe('optional aim assist', () => {
     m.walls = [{ x: d.x - 60, y: d.y + 60, w: 120, h: 16 }];
     for (let i = 0; i < 40; i++) stepMission(m, { x: 0, y: 0, fire: true, assist: true }, DT);
     expect(d.hp).toBe(d.maxHp);
+  });
+
+  it('on: after the ship has turned full circles (an unwrapped heading) the cone is still 8° of the nose', () => {
+    // Regression: the heading accumulates as the ship turns. A target 75° off the nose used to be taken
+    // as "in the cone" once the heading had wrapped, and the shot was bent onto it.
+    for (const turns of [-2, -1, 1, 2, 3]) {
+      const m = range();
+      face(m, -Math.PI / 2 + turns * Math.PI * 2); // nose straight up, after `turns` full circles
+      const off = (-75 * Math.PI) / 180 - Math.PI / 2;
+      const wide = dummy(m, m.ship.x + Math.cos(off) * 320, m.ship.y + Math.sin(off) * 320);
+      stepMission(m, { x: 0, y: 0, assist: true }, DT);
+      expect(m.target, `${turns} turns`).toBeNull();
+      for (let i = 0; i < 40; i++) stepMission(m, { x: 0, y: 0, fire: true, assist: true }, DT);
+      expect(wide.hp, `${turns} turns`).toBe(wide.maxHp);
+      const near = dummy(m, m.ship.x + Math.cos(-Math.PI / 2 + 0.1) * 300, m.ship.y + Math.sin(-Math.PI / 2 + 0.1) * 300);
+      stepMission(m, { x: 0, y: 0, assist: true }, DT);
+      expect(m.target, `${turns} turns`).toBe(near.id); // and a target inside the cone is still assisted
+    }
   });
 
   it('on: the bolt still leaves from the muzzle at the nose', () => {

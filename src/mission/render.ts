@@ -4,7 +4,7 @@
 
 import type { Fx } from '../game/fx';
 import { Vfx } from './vfx';
-import { BEAM_HALF, BEAM_LENGTH, CHRONO_DURATION, FIRE_RANGE, HIT_R, MUZZLE, PULSE_BAND, PULSE_GAP, VIEW, barrierState, objectiveTarget, wallAt, type Drone, type MissionState } from './sim';
+import { BEAM_HALF, BEAM_LENGTH, CHRONO_DURATION, FIRE_RANGE, HIT_R, MUZZLE, PULSE_BAND, PULSE_GAP, REVIVE_R, VIEW, barrierState, carrierOf, objectiveTarget, wallAt, type Drone, type MissionState, type Pilot } from './sim';
 
 export type ShipId = 'arrow' | 'interceptor' | 'manta' | 'phantom';
 
@@ -13,6 +13,8 @@ export interface MissionLook {
   trail: string; // TrailId from progression (classic, comet, beads, prism, halo)
   reducedMotion: boolean;
   aimAssist?: boolean;
+  /** Co-op: which pilot is this screen's, and every pilot's name, colour and hull (by slot). */
+  coop?: { me: number; names: string[]; colors: [number, number, number][]; hulls: ShipId[] };
 }
 
 type RGB = [number, number, number];
@@ -162,18 +164,31 @@ export function drawMission(ctx: CanvasRenderingContext2D, m: MissionState, mem:
   drawTethers(ctx, m, t);
   drawBoss(ctx, m, t);
   drawDrones(ctx, m, t);
+  drawIncoming(ctx, m, t);
   drawBullets(ctx, m);
-  drawTarget(ctx, m, t);
-  updateTrail(mem, m);
-  drawTrail(ctx, mem, m, look.trail, t);
+  drawUplinks(ctx, m, t);
+  drawLinked(ctx, m, t);
+  const me = look.coop && m.ships.length > 1 ? (m.ships[look.coop.me] ?? m.ship) : m.ship;
+  drawTarget(ctx, m, t, me === m.ship ? m.target : me.aimTarget);
+  updateTrail(mem, m, me);
+  if (!me.downed) drawTrail(ctx, mem, m, look.trail, t);
   drawParticles(ctx, fx);
-  if (m.status === 'playing' && m.def.weapons) drawAim(ctx, m, t);
-  if (m.status !== 'lost' || m.ship.hp > 0) drawShip(ctx, m, look.ship, t, chrono, mem.hurt);
-  if (m.status === 'playing') drawShipStatus(ctx, m, t, look.reducedMotion);
+  if (look.coop && m.ships.length > 1) {
+    // Co-op: every pilot, in their own colour and hull; this screen's pilot drawn last (on top).
+    const co = look.coop;
+    if (m.status === 'playing' && m.def.weapons && !me.downed && me.online && carrierOf(m) !== me) drawAim(ctx, m, t, me, me.aimTarget !== null);
+    for (const p of [...m.ships.filter((p) => p !== me), me]) drawPilot(ctx, m, p, co, t, chrono, p === me ? mem.hurt : 0);
+    if (m.status === 'playing' && !me.downed) drawShipStatus(ctx, m, t, look.reducedMotion, me);
+  } else {
+    if (m.status === 'playing' && m.def.weapons) drawAim(ctx, m, t);
+    if (m.status !== 'lost' || m.ship.hp > 0) drawShip(ctx, m, look.ship, t, chrono, mem.hurt);
+    if (m.status === 'playing') drawShipStatus(ctx, m, t, look.reducedMotion);
+  }
   mem.vfx.drawOver(ctx);
   drawPopups(ctx, fx);
   ctx.restore();
-  drawPointer(ctx, m, t);
+  drawPointer(ctx, m, t, me);
+  drawIncomingEdges(ctx, m, t);
 
   // CHRONO SHIFT: cooler, desaturated light over everything, with a vignette.
   if (chrono > 0) {
@@ -1330,12 +1345,12 @@ function drawBullets(ctx: CanvasRenderingContext2D, m: MissionState): void {
   ctx.restore();
 }
 
-function drawTarget(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
-  if (m.target === null) return;
+function drawTarget(ctx: CanvasRenderingContext2D, m: MissionState, t: number, target: number | null = m.target): void {
+  if (target === null) return;
   // Hostile lock: amber corner brackets that tighten as they lock (rocks for The Rescue use their id).
-  const tg = m.target === -1 ? m.boss : m.target <= -2 ? m.rocks.find((r) => -2 - r.id === m.target) : m.drones.find((d) => d.id === m.target);
+  const tg = target === -1 ? m.boss : target <= -2 ? m.rocks.find((r) => -2 - r.id === target) : m.drones.find((d) => d.id === target);
   if (!tg) return;
-  const hitR = m.target === -1 ? 70 : m.target <= -2 ? ('r' in tg ? (tg as { r: number }).r + 6 : 26) : HIT_R[(tg as Drone).kind] + 6;
+  const hitR = target === -1 ? 70 : target <= -2 ? ('r' in tg ? (tg as { r: number }).r + 6 : 26) : HIT_R[(tg as Drone).kind] + 6;
   const r = hitR + Math.sin(t * 8) * 2;
   const L = r * 0.45;
   ctx.save();
@@ -1511,25 +1526,33 @@ function drawRescueZone(ctx: CanvasRenderingContext2D, m: MissionState, t: numbe
   ctx.fillStyle = rgba(FRIEND, 0.9);
   ctx.font = '700 12px Inter, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('RESCUE BAY', 0, -z.r - 10);
+  const delivered = m.pods.some((p) => p.heavy && p.state === 'saved');
+  ctx.fillText(m.def.id === 'twin-lock' ? (delivered ? 'UPLINK BAY · CORE DELIVERED' : 'UPLINK BAY · DELIVER THE CORE') : 'RESCUE BAY', 0, -z.r - 10);
   ctx.restore();
 }
 
 function drawPods(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
-  let leader: { x: number; y: number } = m.ship;
+  // Each towed pod trails its pilot (co-op: whoever's tractor beam holds it), then the pod in front.
+  const leaders = new Map<number, { x: number; y: number }>(m.ships.map((s) => [s.slot, s]));
   for (const p of m.pods) {
     if (p.state === 'saved') continue;
     if (p.state === 'towed') {
+      const slot = p.towedBy ?? 0;
+      const leader = leaders.get(slot) ?? m.ship;
       // Tractor tether
-      ctx.strokeStyle = `rgba(150, 210, 255, ${0.5 + 0.3 * Math.sin(t * 12)})`;
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = p.heavy ? `rgba(255, 213, 74, ${0.6 + 0.3 * Math.sin(t * 12)})` : `rgba(150, 210, 255, ${0.5 + 0.3 * Math.sin(t * 12)})`;
+      ctx.lineWidth = p.heavy ? 3 : 2;
       ctx.setLineDash([4, 5]);
       ctx.beginPath();
       ctx.moveTo(leader.x, leader.y);
       ctx.lineTo(p.x, p.y);
       ctx.stroke();
       ctx.setLineDash([]);
-      leader = p;
+      leaders.set(slot, p);
+    }
+    if (p.heavy) {
+      drawDataCore(ctx, p.x, p.y, t, p.state === 'drifting');
+      continue;
     }
     if (!p.found) {
       // Not yet located: a faint distress signal of uncertain position
@@ -1645,8 +1668,7 @@ function drawGravity(ctx: CanvasRenderingContext2D, m: MissionState, t: number):
 
 /** Shield bubble, overdrive glow and damage smoke on the player's ship. */
 /** Shield bubble, overdrive glow and damage smoke on the player's ship. */
-function drawShipStatus(ctx: CanvasRenderingContext2D, m: MissionState, t: number, reducedMotion: boolean): void {
-  const s = m.ship;
+function drawShipStatus(ctx: CanvasRenderingContext2D, m: MissionState, t: number, reducedMotion: boolean, s: Pilot = m.ship): void {
   if (m.power.shield) {
     // Deflector: a soft bubble with a rotating hex shimmer
     const g = ctx.createRadialGradient(s.x, s.y, 18, s.x, s.y, 32);
@@ -1703,8 +1725,8 @@ export const HULLS: Record<ShipId, [number, number][]> = {
   phantom: [[30, 0], [4, 5], [-2, 16], [-20, 12], [-12, 0], [-20, -12], [-2, -16], [4, -5]],
 };
 
-function drawShip(ctx: CanvasRenderingContext2D, m: MissionState, ship: ShipId, t: number, chrono: number, hurt: number): void {
-  const s = m.ship;
+function drawShip(ctx: CanvasRenderingContext2D, m: MissionState, ship: ShipId, t: number, chrono: number, hurt: number, s: Pilot = m.ship, accent: RGB = CYAN): void {
+  const solo = accent === CYAN;
   const blink = s.invuln > 0 && m.status === 'playing' && Math.floor(t * 14) % 2 === 0;
   ctx.save();
   ctx.translate(s.x, s.y);
@@ -1733,8 +1755,8 @@ function drawShip(ctx: CanvasRenderingContext2D, m: MissionState, ship: ShipId, 
     ctx.globalCompositeOperation = 'lighter';
     const fg = ctx.createLinearGradient(-11, 0, -11 - flame, 0);
     fg.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
-    fg.addColorStop(0.25, rgba(CYAN, 0.9));
-    fg.addColorStop(1, rgba(CYAN, 0));
+    fg.addColorStop(0.25, rgba(accent, 0.9));
+    fg.addColorStop(1, rgba(accent, 0));
     ctx.fillStyle = fg;
     ctx.beginPath();
     ctx.moveTo(-10, ey - 3.5);
@@ -1742,13 +1764,13 @@ function drawShip(ctx: CanvasRenderingContext2D, m: MissionState, ship: ShipId, 
     ctx.lineTo(-10, ey + 3.5);
     ctx.closePath();
     ctx.fill();
-    if (thrust > 0.6) bloom(ctx, -12, ey, 9 + thrust * 6, CYAN, (thrust - 0.6) * 1.6);
+    if (thrust > 0.6) bloom(ctx, -12, ey, 9 + thrust * 6, accent, (thrust - 0.6) * 1.6);
     ctx.restore();
   }
   // Friendly under-glow: keeps the player's ship readable against every backdrop, at any size
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  bloom(ctx, 2, 0, 34, CYAN, 0.22);
+  bloom(ctx, 2, 0, 34, accent, 0.22);
   ctx.restore();
   // Hull: gunmetal with a lit upper surface
   const pts = HULLS[ship] ?? HULLS.arrow;
@@ -1761,7 +1783,7 @@ function drawShip(ctx: CanvasRenderingContext2D, m: MissionState, ship: ShipId, 
   hg.addColorStop(1, '#232a3c');
   ctx.fillStyle = hg;
   ctx.fill();
-  ctx.strokeStyle = rgba(ship === 'phantom' ? GOLD : [170, 215, 255], 1);
+  ctx.strokeStyle = rgba(!solo ? accent : ship === 'phantom' ? GOLD : [170, 215, 255], 1);
   ctx.lineWidth = 2;
   ctx.stroke();
   // Panel lines and the wing accent stripes
@@ -1775,7 +1797,7 @@ function drawShip(ctx: CanvasRenderingContext2D, m: MissionState, ship: ShipId, 
   ctx.moveTo(-6, -14);
   ctx.lineTo(-6, 14);
   ctx.stroke();
-  ctx.strokeStyle = rgba(ship === 'phantom' ? GOLD : CYAN, 0.8);
+  ctx.strokeStyle = rgba(!solo ? accent : ship === 'phantom' ? GOLD : CYAN, 0.8);
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(-14, -15);
@@ -1814,8 +1836,7 @@ function drawShip(ctx: CanvasRenderingContext2D, m: MissionState, ship: ShipId, 
   ctx.restore();
 }
 
-function updateTrail(mem: RenderMemory, m: MissionState): void {
-  const s = m.ship;
+function updateTrail(mem: RenderMemory, m: MissionState, s: Pilot = m.ship): void {
   const back = { x: s.x - Math.cos(s.angle) * 16, y: s.y - Math.sin(s.angle) * 16 };
   mem.trail.push({ ...back, t: m.realTime });
   while (mem.trail.length && m.realTime - mem.trail[0].t > 0.45) mem.trail.shift();
@@ -1853,10 +1874,265 @@ function drawTrail(ctx: CanvasRenderingContext2D, mem: RenderMemory, m: MissionS
   }
 }
 
-/** An arrow at the screen edge pointing to an off-screen objective. */
-function drawPointer(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
+/** Announced enemies (an encounter's warning): a pulsing warp marker where each will appear. */
+function drawIncoming(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
   if (m.status !== 'playing') return;
-  const tg = objectiveTarget(m);
+  for (const st of m.encounters) {
+    if (st.status !== 'warning') continue;
+    const important = !!m.def.encounters?.find((e) => e.id === st.id)?.tag;
+    const c = important ? ORANGE : RED;
+    for (const p of st.incoming) {
+      const k = 0.5 + 0.5 * Math.sin(t * 9);
+      ctx.strokeStyle = rgba(c, 0.45 + 0.4 * k);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 20 + 6 * k, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Heading it will fly in on
+      if (p.vx || p.vy) {
+        const a = Math.atan2(p.vy, p.vx);
+        ctx.fillStyle = rgba(c, 0.8);
+        ctx.beginPath();
+        ctx.moveTo(p.x + Math.cos(a) * 34, p.y + Math.sin(a) * 34);
+        ctx.lineTo(p.x + Math.cos(a + 2.6) * 18 + Math.cos(a) * 24, p.y + Math.sin(a + 2.6) * 18 + Math.sin(a) * 24);
+        ctx.lineTo(p.x + Math.cos(a - 2.6) * 18 + Math.cos(a) * 24, p.y + Math.sin(a - 2.6) * 18 + Math.sin(a) * 24);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+  }
+}
+
+/** Screen-edge warnings for announced enemies that will appear off-screen: which side they come from. */
+function drawIncomingEdges(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
+  if (m.status !== 'playing') return;
+  const margin = 18;
+  for (const st of m.encounters) {
+    if (st.status !== 'warning') continue;
+    const important = !!m.def.encounters?.find((e) => e.id === st.id)?.tag;
+    for (const p of st.incoming) {
+      const sx = p.x - m.camX;
+      const sy = p.y - m.camY;
+      if (sx > margin && sx < VIEW - margin && sy > margin && sy < VIEW - margin) continue;
+      const ex = Math.max(margin, Math.min(VIEW - margin, sx));
+      const ey = Math.max(margin, Math.min(VIEW - margin, sy));
+      const a = Math.atan2(sy - ey, sx - ex) || Math.atan2(sy - VIEW / 2, sx - VIEW / 2);
+      ctx.save();
+      ctx.translate(ex, ey);
+      ctx.rotate(a);
+      ctx.globalAlpha = 0.55 + 0.45 * Math.sin(t * 9);
+      ctx.fillStyle = rgba(important ? ORANGE : RED, 0.95);
+      ctx.beginPath();
+      ctx.moveTo(10, 0);
+      ctx.lineTo(-8, 9);
+      ctx.lineTo(-8, -9);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+// ---------- Co-op ----------
+
+/** A pilot in co-op: their ship in their colour and hull, a name tag, and their state (downed, offline, carrying). */
+function drawPilot(ctx: CanvasRenderingContext2D, m: MissionState, p: Pilot, co: NonNullable<MissionLook['coop']>, t: number, chrono: number, hurt: number): void {
+  const color = co.colors[p.slot] ?? CYAN;
+  const name = co.names[p.slot] ?? `Pilot ${p.slot + 1}`;
+  const me = p.slot === co.me;
+  if (!p.online) {
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    drawShip(ctx, m, co.hulls[p.slot] ?? 'arrow', t, 0, 0, p, color);
+    ctx.restore();
+    tag(ctx, p.x, p.y - 34, `${name} · OFFLINE`, [150, 150, 160], 0.8);
+    return;
+  }
+  if (p.downed) {
+    // The wreck: dark, smoking, with the revive circle (it fills while a teammate stays inside it).
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.translate(p.x, p.y);
+    ctx.rotate(0.6);
+    ctx.translate(-p.x, -p.y);
+    drawShip(ctx, m, co.hulls[p.slot] ?? 'arrow', t, 0, 0, { ...p, thrust: 0, invuln: 0 }, [120, 120, 130]);
+    ctx.restore();
+    for (let k = 0; k < 3; k++) {
+      const ph = (t * 0.8 + k / 3) % 1;
+      ctx.fillStyle = `rgba(80, 80, 92, ${0.4 * (1 - ph)})`;
+      ctx.beginPath();
+      ctx.arc(p.x + Math.sin(k * 2 + t) * 6, p.y - 10 - ph * 34, 4 + ph * 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const pulse = 0.5 + 0.5 * Math.sin(t * 6);
+    ctx.setLineDash([6, 6]);
+    ctx.lineDashOffset = -t * 20;
+    ctx.strokeStyle = rgba(color, 0.5 + 0.35 * pulse);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, REVIVE_R, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (p.reviveCharge > 0) {
+      ctx.strokeStyle = rgba([91, 240, 138], 0.95);
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, REVIVE_R, -Math.PI / 2, -Math.PI / 2 + p.reviveCharge * Math.PI * 2);
+      ctx.stroke();
+    }
+    tag(ctx, p.x, p.y - REVIVE_R - 10, me ? 'YOU ARE DOWN · HOLD ON' : `${name} DOWN · STAY CLOSE TO REVIVE`, color, 0.75 + 0.25 * pulse);
+    return;
+  }
+  drawShip(ctx, m, co.hulls[p.slot] ?? 'arrow', t, me ? chrono : 0, hurt, p, color);
+  // Name tag (with hull pips); "you" is marked by a ring under the ship.
+  if (me) {
+    ctx.strokeStyle = rgba(color, 0.55);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 27, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  const carrying = carrierOf(m) === p;
+  tag(ctx, p.x, p.y - 34, carrying ? `${me ? 'YOU' : name} · CARRYING CORE` : me ? 'YOU' : name, color, 0.95);
+  for (let i = 0; i < m.def.maxHp; i++) {
+    ctx.fillStyle = i < p.hp ? rgba(color, 0.95) : 'rgba(255, 255, 255, 0.18)';
+    ctx.fillRect(p.x - m.def.maxHp * 4 + i * 8, p.y + 26, 6, 3);
+  }
+}
+
+function tag(ctx: CanvasRenderingContext2D, x: number, y: number, text: string, color: RGB, alpha: number): void {
+  ctx.font = '600 11px "Share Tech Mono", monospace';
+  ctx.textAlign = 'center';
+  const w = ctx.measureText(text).width + 10;
+  ctx.fillStyle = 'rgba(5, 8, 16, 0.6)';
+  ctx.fillRect(x - w / 2, y - 11, w, 15);
+  ctx.fillStyle = rgba(color, alpha);
+  ctx.fillText(text, x, y);
+}
+
+/** Co-op data core: a heavy, glowing hexagonal core (beacon pulse while it waits to be picked up). */
+function drawDataCore(ctx: CanvasRenderingContext2D, x: number, y: number, t: number, waiting: boolean): void {
+  ctx.save();
+  ctx.translate(x, y);
+  if (waiting) {
+    const ph = (t * 0.9) % 1;
+    ctx.strokeStyle = rgba(GOLD, 0.6 * (1 - ph));
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 22 + ph * 50, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  bloom(ctx, 0, 0, 36, GOLD, 0.35);
+  ctx.restore();
+  ctx.rotate(t * 0.8);
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    if (i) ctx.lineTo(Math.cos(a) * 16, Math.sin(a) * 16);
+    else ctx.moveTo(Math.cos(a) * 16, Math.sin(a) * 16);
+  }
+  ctx.closePath();
+  ctx.fillStyle = '#3a2c08';
+  ctx.fill();
+  ctx.strokeStyle = rgba(GOLD, 0.95);
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  ctx.fillStyle = rgba(GOLD, 0.6 + 0.3 * Math.sin(t * 5));
+  ctx.beginPath();
+  ctx.arc(0, 0, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  if (waiting) tag(ctx, x, y - 30, 'DATA CORE · PICK UP', GOLD, 0.95);
+}
+
+/** Co-op uplinks: two pads that charge only while both are held. A beam joins them while they are. */
+function drawUplinks(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
+  const up = m.uplink;
+  if (!up) return;
+  const held = up.pads.map((pad) => m.ships.some((p) => p.online && !p.downed && Math.hypot(p.x - pad.x, p.y - pad.y) < pad.r));
+  const both = held.every(Boolean);
+  if (!up.active && both) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = rgba([91, 240, 138], 0.25 + 0.2 * Math.sin(t * 10));
+    ctx.lineWidth = 4;
+    ctx.setLineDash([10, 8]);
+    ctx.lineDashOffset = -t * 60;
+    ctx.beginPath();
+    ctx.moveTo(up.pads[0].x, up.pads[0].y);
+    for (const pad of up.pads.slice(1)) ctx.lineTo(pad.x, pad.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+  up.pads.forEach((pad, i) => {
+    const col: RGB = up.active ? [91, 240, 138] : held[i] ? [91, 240, 138] : ORANGE;
+    ctx.save();
+    ctx.translate(pad.x, pad.y);
+    ctx.fillStyle = rgba(col, held[i] || up.active ? 0.12 : 0.05);
+    ctx.beginPath();
+    ctx.arc(0, 0, pad.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.setLineDash(up.active ? [] : [8, 6]);
+    ctx.lineDashOffset = -t * 30;
+    ctx.strokeStyle = rgba(col, 0.9);
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // The shared charge, shown on both pads
+    ctx.strokeStyle = rgba([91, 240, 138], 0.95);
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(0, 0, pad.r + 8, -Math.PI / 2, -Math.PI / 2 + up.charge * Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    const label = up.active ? `UPLINK ${'AB'[i]} · LOCKED` : held[i] ? `UPLINK ${'AB'[i]} · HELD` : `UPLINK ${'AB'[i]} · HOLD HERE`;
+    // Kept inside the visible window, even when the pad sits at its edge.
+    tag(ctx, Math.max(m.camX + 80, Math.min(m.camX + VIEW - 80, pad.x)), pad.y - pad.r - 16, label, col, 0.95);
+  });
+}
+
+/** Co-op synchronised strike: each generator's close-range circle, and the strike window once it starts. */
+function drawLinked(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
+  const L = m.linked;
+  if (!L || L.done) return;
+  const left = L.firstAt === null ? null : Math.max(0, L.window - (m.realTime - L.firstAt));
+  for (const d of m.drones) {
+    if (d.tag !== L.tag) continue;
+    const close = m.ships.some((p) => p.online && !p.downed && Math.hypot(p.x - d.x, p.y - d.y) <= L.range);
+    ctx.save();
+    ctx.setLineDash([5, 8]);
+    ctx.lineDashOffset = -t * 25;
+    ctx.strokeStyle = close ? rgba([91, 240, 138], 0.55) : rgba(CYAN, 0.35);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, L.range, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+    tag(ctx, d.x, d.y + 44, close ? 'IN RANGE' : 'CLOSE IN TO DAMAGE', close ? [91, 240, 138] : CYAN, 0.9);
+  }
+  if (left !== null) {
+    // The window: a countdown above every generator still standing.
+    for (const d of m.drones) {
+      if (d.tag !== L.tag) continue;
+      ctx.strokeStyle = rgba(RED, 0.9);
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 34, -Math.PI / 2, -Math.PI / 2 + (left / L.window) * Math.PI * 2);
+      ctx.stroke();
+      tag(ctx, d.x, d.y - 52, `STRIKE NOW · ${left.toFixed(1)}s`, RED, 0.95);
+    }
+  }
+}
+
+/** An arrow at the screen edge pointing to an off-screen objective. */
+function drawPointer(ctx: CanvasRenderingContext2D, m: MissionState, t: number, viewer: Pilot = m.ship): void {
+  if (m.status !== 'playing') return;
+  const tg = objectiveTarget(m, viewer);
   if (!tg) return;
   const sx = tg.x - m.camX;
   const sy = tg.y - m.camY;
@@ -1923,13 +2199,11 @@ function drawPopups(ctx: CanvasRenderingContext2D, fx: Fx): void {
 // ---------- Operations: aim, objective structures and targets ----------
 
 /** The blaster's line of fire: from the muzzle along the heading, to its range. Brightens on a target. */
-function drawAim(ctx: CanvasRenderingContext2D, m: MissionState, t: number): void {
-  const s = m.ship;
+function drawAim(ctx: CanvasRenderingContext2D, m: MissionState, t: number, s: Pilot = m.ship, locked = m.target !== null): void {
   const ux = Math.cos(s.angle);
   const uy = Math.sin(s.angle);
   const x0 = s.x + ux * MUZZLE;
   const y0 = s.y + uy * MUZZLE;
-  const locked = m.target !== null;
   ctx.save();
   ctx.setLineDash([4, 10]);
   ctx.lineDashOffset = -t * 40;

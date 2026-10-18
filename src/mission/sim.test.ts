@@ -165,7 +165,7 @@ describe('Mission 03 · Breach Protocol (combat)', () => {
   it('gunners telegraph before firing at the ship', () => {
     const m = make('breach-protocol');
     m.drones = [];
-    m.waves = [];
+    m.encounters = []; // no scripted enemies
     m.drones.push({ id: 50, kind: 'gunner', x: 500, y: 300, vx: 0, vy: 0, hp: 5, maxHp: 5, fireIn: 0, aim: 0, hitFlash: 0, spawnIn: 0, targetAlly: null });
     m.killsNeeded = 99;
     stepMission(m, { x: 0, y: 0 }, DT);

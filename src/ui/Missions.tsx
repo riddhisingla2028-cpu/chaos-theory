@@ -538,6 +538,13 @@ function MissionPlay(props: {
           case 'warn':
             sfx.play('warning');
             break;
+          case 'incoming':
+            // Encounters with a callout already sound the alert through comms.
+            if (!mRef.current.def.encounters?.find((x) => x.id === e.id)?.callout) sfx.play('warning');
+            break;
+          case 'encounter-clear':
+            fx.popup(ship.x, ship.y - 40, `${e.name.toUpperCase()} CLEARED`);
+            break;
           case 'boss-phase':
             fx.addShake(10);
             if (mRef.current.boss) vfx.shock(mRef.current.boss.x, mRef.current.boss.y, 420, 0.7, [229, 72, 77], 4);
@@ -631,7 +638,7 @@ function MissionPlay(props: {
     const m = mRef.current;
     const met = m.status === 'won' ? secondariesMet(m) : [false, false];
     const r: MissionResult = {
-      id: m.def.id,
+      id: def.id,
       won: m.status === 'won',
       score: m.score,
       time: Math.round(m.time * 10) / 10,
@@ -816,6 +823,19 @@ function MissionPlay(props: {
           <div className={`m-timer${o.timer.urgent ? ' urgent' : ''}`} role="status" aria-label={`${o.timer.label} ${o.timer.value}`}>
             <span className="m-stat-label">{o.timer.label}</span>
             <span className="m-timer-value">{o.timer.value}</span>
+          </div>
+        )}
+        {(o.contact || o.hold) && (
+          <div className={`m-contact${o.contact?.state === 'inbound' ? ' inbound' : ''}${o.contact?.required ? ' required' : ''}`} role="status" data-testid="m-contact">
+            {o.contact && (
+              <>
+                <span className="m-stat-label">{o.contact.state === 'inbound' ? 'Inbound' : 'Engaged'}</span>
+                <span className="m-contact-name">{o.contact.name}</span>
+                {o.contact.from && <span className="m-contact-from">from the {o.contact.from === 'here' ? 'nearby' : o.contact.from}</span>}
+                {o.contact.state === 'engaged' && o.contact.left > 0 && <span className="m-contact-left">{o.contact.left} left</span>}
+              </>
+            )}
+            {o.hold && <span className="m-contact-hold">{o.hold}</span>}
           </div>
         )}
         <div className="m-hud-row m-status" aria-label="Ship systems">

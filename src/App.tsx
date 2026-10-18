@@ -1263,6 +1263,9 @@ export default function App() {
               initialCode={inviteCode}
               onBack={() => setScreen('home')}
               onInMatch={setMpPlaying}
+              sfx={sfxRef.current}
+              reducedMotion={reducedMotion || !settings.shake}
+              aimAssist={settings.aimAssist}
             />
           )}
           {screen === 'legal' && <LegalScreen onBack={() => setScreen('premium')} />}

@@ -38,6 +38,7 @@ describe('02 · Alien Pursuit: the command raider', () => {
   const toCommander = (m: MissionState) => {
     while (m.status === 'playing' && m.phase === 0 && m.realTime < 120) combatPilot(m);
     expect(phaseId(m)).toBe('commander');
+    stepMission(m, { x: 0, y: 0 }, DT); // the commander warps in on the next step
   };
 
   it('appears after the first leg; if ignored it escapes off the map, the optional objective fails and the escort goes on', () => {
@@ -148,10 +149,11 @@ describe('06 · Reactor Meltdown: core stability', () => {
 describe('07 · Alien Swarm: the hive carrier', () => {
   it('launches raiders at the frigate while it lives', () => {
     const m = make('breach-protocol');
-    m.waves = [];
+    m.encounters.find((e) => e.id === 'swarm')!.status = 'cleared'; // the line has held
     m.drones = [];
-    for (let i = 0; i < 45; i++) stepMission(m, { x: 0, y: 0 }, DT); // the line holds for a moment
+    for (let i = 0; i < 45; i++) stepMission(m, { x: 0, y: 0 }, DT);
     expect(phaseId(m)).toBe('hive');
+    for (let i = 0; i < 60 * 3 && !m.drones.some((d) => d.kind === 'hive'); i++) stepMission(m, { x: 0, y: 0 }, DT); // it warps in after its warning
     const launched = new Set<number>();
     let allAtFrigate = true;
     for (let i = 0; i < 60 * 8; i++) {
@@ -172,6 +174,12 @@ describe('08 · The Convoy: ambush', () => {
     const m = make('convoy');
     while (m.status === 'playing' && m.phase === 0 && m.realTime < 120) combatPilot(m);
     expect(phaseId(m)).toBe('ambush');
+    // Announced first (incoming markers), then the gunships warp in ahead of the convoy.
+    const amb = m.encounters.find((e) => e.id === 'ambush')!;
+    stepMission(m, { x: 0, y: 0 }, DT);
+    expect(amb.status).toBe('warning');
+    expect(amb.incoming).toHaveLength(3);
+    while (amb.status === 'warning') stepMission(m, { x: 0, y: 0 }, DT);
     expect(m.drones.filter((d) => d.tag === 'ambush')).toHaveLength(3);
     while (m.status === 'playing' && m.realTime < 260) combatPilot(m);
     expect(m.status).toBe('won');
@@ -192,11 +200,13 @@ describe('09 · The Last Jump: drive disruption and the bomber wing', () => {
 
   it('a full drive does not jump while the bombers live', () => {
     const m = make('last-jump');
-    m.spawner = null;
+    for (const e of m.encounters) if (e.id !== 'bombers') e.status = 'cancelled'; // only the bomber wing flies
     m.drones = [];
     m.jump!.charge = m.jump!.duration / 2;
     stepMission(m, { x: 0, y: 0 }, DT);
     expect(phaseId(m)).toBe('bombers');
+    for (let i = 0; i < 60 * 4 && m.drones.filter((d) => d.tag === 'bombers').length < 3; i++) stepMission(m, { x: 0, y: 0 }, DT);
+    expect(m.drones.filter((d) => d.tag === 'bombers')).toHaveLength(3);
     for (const d of m.drones) d.spawnIn = 999; // keep them inert
     m.jump!.charge = m.jump!.duration;
     for (let i = 0; i < 120; i++) stepMission(m, { x: 0, y: 0 }, DT);
