@@ -111,7 +111,6 @@ export function HomeScreen(props: {
 
       <main className="home-main">
         <section className="hero">
-          <p className="eyebrow home-free">Free · no download · no sign-up</p>
           <h1 className="logo logo-xl" data-text="CHAOS THEORY">
             <span>CHAOS</span>
             <span>THEORY</span>
